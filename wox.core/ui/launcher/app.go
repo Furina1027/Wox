@@ -435,7 +435,7 @@ func (a *App) start() error {
 	host := woxwidget.NewHost(a.buildLauncher)
 	launcher, _, err := a.windows.Open(a.windowID, woxui.WindowOptions{
 		Title: "Wox",
-		Size:  woxui.Size{Width: float32(a.show.WindowWidth), Height: a.densityMetrics.queryBoxHeight + a.palette.appPadding.Top + a.palette.appPadding.Bottom + a.densityMetrics.toolbarHeight},
+		Size:  woxui.Size{Width: float32(a.show.WindowWidth), Height: a.densityMetrics.queryBoxHeight + a.palette.appPadding.Top + a.palette.appPadding.Bottom},
 		// Windows uses HWND_TOPMOST so the query window stays above other apps.
 		// macOS floating level and Linux layer-shell TOP already do that without
 		// occupying the overlay band, so timer/tooltip HUDs can sit above Wox.
@@ -1288,7 +1288,7 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 		// Preserve the existing outer-edge budget for grids and empty launchers.
 		resultBottomInset = int(palette.appPadding.Bottom)
 	}
-	toolbarHasContent := resultCount > 0 || toolbarMessageVisible || !params.HideToolbar
+	toolbarHasContent := launcherToolbarHasContent(resultCount, toolbarMessageVisible, a.actionPanel)
 	toolbarHeightIncluded := launcherToolbarHeightIncluded(params.HideToolbar, toolbarHasContent, previewFullscreen, chatFullscreen || a.webViewFullscreen)
 	height := 0
 	if !params.HideQueryBox {
@@ -1469,6 +1469,13 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 
 func launcherReservesFullPreviewHeight(params showAppParams, previewVisible bool) bool {
 	return previewVisible || params.ShowPreviewTitleBar && params.HideQueryBox && params.HideToolbar
+}
+
+// launcherToolbarHasContent reports whether the footer row earns its height. An empty
+// launcher keeps only the query box, so the row appears once there are results, a plugin
+// toolbar message, or a panel anchored to its edge.
+func launcherToolbarHasContent(resultCount int, messageVisible, panelOpen bool) bool {
+	return resultCount > 0 || messageVisible || panelOpen
 }
 
 // launcherToolbarHeightIncluded preserves the hidden toolbar's space only in Flutter's chat mode.

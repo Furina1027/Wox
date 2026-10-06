@@ -243,7 +243,10 @@ func (a *App) buildLauncher(frame woxui.FrameInfo) woxwidget.Widget {
 		queryHeight, _ = launcherQueryChromeMetrics(queryBoxHeight, snapshot.palette.appPadding, queryAtBottom)
 	}
 	toolbarHeight := float32(0)
-	if !snapshot.show.HideToolbar && !chromeFullscreen {
+	// The empty launcher is query-box only: keep the footer out of the tree so its row
+	// and edge do not paint until results, a plugin message, or a panel need it.
+	toolbarHasContent := launcherToolbarHasContent(len(snapshot.results), a.effectiveToolbarMessage() != nil, snapshot.actionPanel)
+	if !snapshot.show.HideToolbar && !chromeFullscreen && toolbarHasContent {
 		toolbarHeight = snapshot.densityMetrics.toolbarHeight
 	}
 	refinementHeight := float32(0)
