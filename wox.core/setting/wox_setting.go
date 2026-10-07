@@ -460,6 +460,7 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		QueryHotkeys:                       NewPlatformValue(store, "QueryHotkeys", []QueryHotkey{}, []QueryHotkey{}, []QueryHotkey{}),
 		ResultBindings:                     NewPlatformValue(store, "ResultBindings", []ResultBinding{}, []ResultBinding{}, []ResultBinding{}),
 		QueryAliases:                       NewWoxSettingValue(store, "QueryAliases", []QueryAlias{}),
+		TrayQueries:                        NewWoxSettingValue(store, "TrayQueries", []TrayQuery{}),
 		QueryHistories:                     NewWoxSettingValue(store, "QueryHistories", []QueryHistory{}),
 		QueryCompletionFeedbacks:           NewWoxSettingValue(store, "QueryCompletionFeedback", []QueryCompletionFeedback{}),
 		PinedResults:                       NewWoxSettingValue(store, "PinedResults", util.NewHashMap[ResultHash, bool]()),
