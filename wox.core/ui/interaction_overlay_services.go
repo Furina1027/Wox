@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"strings"
 
-	aitool "wox/ai/builtintool/wox"
 	"wox/common"
 	"wox/plugin"
 	"wox/ui/contract"
@@ -132,86 +131,6 @@ func (s *CoreServices) ShowPreviewImage(ctx context.Context, sessionID string, i
 	return imageoverlay.Show(uiServiceContext(ctx, sessionID), imageoverlay.Options{
 		Image: image, FitToScreen: true, Topmost: true, Movable: true, CloseOnEscape: true, Anchor: overlay.AnchorCenter,
 	})
-}
-
-// Chat starts or continues one AI chat using the active chat plugin.
-func (s *CoreServices) Chat(ctx context.Context, sessionID string, chat common.AIChatData) error {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return errors.New("ai chat plugin not found")
-	}
-	chater.Chat(ctx, chat, 0)
-	return nil
-}
-
-// ChatByID returns the full chat data for one lightweight summary.
-func (s *CoreServices) ChatByID(ctx context.Context, sessionID string, chatID string) (common.AIChatData, error) {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return common.AIChatData{}, errors.New("ai chat plugin not found")
-	}
-	chat, ok := chater.GetChat(ctx, chatID)
-	if !ok {
-		return common.AIChatData{}, errors.New("chat not found")
-	}
-	return chat, nil
-}
-
-// DefaultChatModel returns the model selected by the active chat plugin.
-func (s *CoreServices) DefaultChatModel(ctx context.Context, sessionID string) (common.Model, error) {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return common.Model{}, errors.New("ai chat plugin not found")
-	}
-	return chater.GetDefaultModel(ctx), nil
-}
-
-// SetDefaultChatModel persists the chat UI model selection for the next new chat draft.
-func (s *CoreServices) SetDefaultChatModel(ctx context.Context, sessionID string, model common.Model) error {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return errors.New("ai chat plugin not found")
-	}
-	chater.SetDefaultModel(ctx, model)
-	return nil
-}
-
-// DeleteChat removes one persisted chat.
-func (s *CoreServices) DeleteChat(ctx context.Context, sessionID string, chatID string) error {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return errors.New("ai chat plugin not found")
-	}
-	if !chater.DeleteChat(ctx, chatID) {
-		return errors.New("chat not found")
-	}
-	return nil
-}
-
-// StopChat cancels one active streaming chat.
-func (s *CoreServices) StopChat(ctx context.Context, sessionID string, chatID string) (bool, error) {
-	ctx = uiServiceContext(ctx, sessionID)
-	chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx)
-	if chater == nil {
-		return false, errors.New("ai chat plugin not found")
-	}
-	return chater.StopChat(ctx, chatID), nil
-}
-
-// AnswerAIQuestion resolves one pending tool question.
-func (s *CoreServices) AnswerAIQuestion(ctx context.Context, sessionID string, questionID string, answer string) error {
-	if questionID == "" {
-		return errors.New("questionId is required")
-	}
-	ctx = uiServiceContext(ctx, sessionID)
-	logger.Info(ctx, fmt.Sprintf("AI: resolving question answer for questionId=%s", questionID))
-	aitool.ResolveAIQuestionAnswer(questionID, answer)
-	return nil
 }
 
 // FetchWebsiteIcon embeds a direct image URL or website favicon so saved settings survive cache cleanup and sync.

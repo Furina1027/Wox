@@ -19,7 +19,6 @@ func TestPreviewOnlyQueryLayoutHidesResultList(t *testing.T) {
 		assert.Equal(t, 0.0, *layout.ResultPreviewWidthRatio)
 	}
 	assert.Nil(t, layout.GridLayout)
-	assert.False(t, layout.ChatMode)
 }
 
 func TestQueryResponseAutoRecordQueryHistoryStaysInsideCore(t *testing.T) {

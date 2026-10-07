@@ -68,179 +68,15 @@ func TestLauncherQueryWindowLeavesOverlayBandOnLinuxAndMac(t *testing.T) {
 	}
 }
 
-func TestLauncherPreviewRatioUsesChatLayout(t *testing.T) {
-	ratio := 0.25
-	if got := launcherPreviewRatio(queryLayout{ResultPreviewWidthRatio: &ratio}, false); got != 0.25 {
-		t.Fatalf("regular preview ratio = %v, want 0.25", got)
+func TestLauncherToolbarOmittedWhenEmpty(t *testing.T) {
+	if launcherToolbarHeightIncluded(false, false, false) {
+		t.Fatal("an empty query must not reserve toolbar height")
 	}
-	if got := launcherPreviewRatio(queryLayout{ResultPreviewWidthRatio: &ratio, ChatMode: true}, false); got != 0 {
-		t.Fatalf("chat preview ratio = %v, want 0", got)
+	if !launcherToolbarHeightIncluded(false, true, false) {
+		t.Fatal("results must reserve toolbar height")
 	}
-	if got := launcherPreviewRatio(queryLayout{ResultPreviewWidthRatio: &ratio}, true); got != 0 {
-		t.Fatalf("fullscreen preview ratio = %v, want 0", got)
-	}
-}
-
-func TestLauncherToolbarHeightIncludedInChatFullscreen(t *testing.T) {
-	if !launcherToolbarHeightIncluded(false, true, true, true) {
-		t.Fatal("chat fullscreen should retain the hidden toolbar height")
-	}
-	if launcherToolbarHeightIncluded(false, true, true, false) {
-		t.Fatal("terminal fullscreen should not retain the hidden toolbar height")
-	}
-	if launcherToolbarHeightIncluded(true, true, true, true) || launcherToolbarHeightIncluded(false, false, true, true) {
-		t.Fatal("disabled or empty toolbar should not contribute height")
-	}
-}
-
-func TestLauncherToolbarIncludesAboutMenuWhenEmpty(t *testing.T) {
-	if !launcherToolbarHeightIncluded(false, true, false, false) {
-		t.Fatal("an empty query still reserves toolbar height for the about menu button")
-	}
-	if launcherToolbarHeightIncluded(true, true, false, false) {
-		t.Fatal("HideToolbar must still omit the about menu button")
-	}
-}
-
-func TestApplyResultsEntersChatModeFromLayout(t *testing.T) {
-	app := New(false, nil)
-	app.uiCall = nil
-	app.visible = true
-	app.query = newInputQuery("chat ")
-	defer app.cancel()
-
-	app.applyResults(app.query.QueryID, []queryResult{{
-		ID: "chat",
-		Preview: queryPreview{
-			PreviewType: "chat",
-			PreviewData: `{"ActiveChat":{"Id":"chat"}}`,
-		},
-	}}, &queryLayout{ChatMode: true}, nil, nil, 0, true)
-
-	if !app.chatFullscreen || app.chatPreview == nil || !app.chatPreview.active {
-		t.Fatalf("chat mode state = fullscreen:%v preview:%+v", app.chatFullscreen, app.chatPreview)
-	}
-	preview := queryPreview{PreviewType: "chat", PreviewData: `{"ActiveChat":{"Id":"chat","IsStreaming":true}}`}
-	result := app.results[0]
-	if err := app.activateChatPreview(result, preview); err != nil {
-		t.Fatal(err)
-	}
-	if !app.chatPreview.chat.IsStreaming || !app.chatFullscreen {
-		t.Fatal("fullscreen chat ignored its originating result's preview update")
-	}
-	preview.PreviewData = `{"ActiveChat":{"Id":"chat","IsStreaming":false}}`
-	if err := app.activateChatPreview(result, preview); err != nil {
-		t.Fatal(err)
-	}
-	if app.chatPreview.chat.IsStreaming || !app.chatFullscreen {
-		t.Fatal("fullscreen chat did not finish the stream")
-	}
-}
-
-func TestApplyResultsKeepsChatModeWhenPreviewIsStillRemote(t *testing.T) {
-	app := New(false, nil)
-	app.uiCall = nil
-	app.visible = true
-	app.query = newInputQuery("chat ")
-	defer app.cancel()
-
-	path := "/preview?sessionId=s&queryId=q&id=chat"
-	app.previewRequests[path] = true
-	app.applyResults(app.query.QueryID, []queryResult{{
-		ID: "chat",
-		Preview: queryPreview{
-			PreviewType: "remote",
-			PreviewData: path,
-		},
-		Actions: []resultAction{{
-			ID:        enterChatModeActionID,
-			IsDefault: true,
-		}},
-	}}, &queryLayout{ChatMode: true}, nil, nil, 0, true)
-
-	if !app.chatFullscreen {
-		t.Fatal("chat mode should stay fullscreen while the chat preview is still remote-wrapped")
-	}
-	app.reconcileSelectedPreviewOnUI()
-	if !app.chatFullscreen {
-		t.Fatal("unresolved remote preview should not tear down chat fullscreen")
-	}
-}
-
-func TestActivateEnterChatActionIgnoresRemotePreviewType(t *testing.T) {
-	app := New(false, nil)
-	app.uiCall = nil
-	app.visible = true
-	app.query = newInputQuery("chat ")
-	app.layout.ChatMode = true
-	defer app.cancel()
-
-	app.results = []queryResult{{
-		ID: "chat",
-		Preview: queryPreview{
-			PreviewType: "remote",
-			PreviewData: "/preview?sessionId=s&queryId=q&id=chat",
-		},
-		Actions: []resultAction{{
-			ID:        enterChatModeActionID,
-			IsDefault: true,
-		}},
-	}}
-	app.selected = 0
-	app.activateAction(0, 0)
-	if !app.chatFullscreen {
-		t.Fatal("Start Chat should enter fullscreen even when the preview is still remote-wrapped")
-	}
-}
-
-// TestChatPreviewUpdatesPreserveLocalState covers embedded and fullscreen stream updates.
-func TestChatPreviewUpdatesPreserveLocalState(t *testing.T) {
-	for _, fullscreen := range []bool{false, true} {
-		t.Run(fmt.Sprintf("fullscreen=%v", fullscreen), func(t *testing.T) {
-			app := New(false, nil)
-			defer app.cancel()
-			result := queryResult{ID: "result", QueryID: "query"}
-			preview := queryPreview{PreviewType: "chat", PreviewData: `{"ActiveChat":{"Id":"chat"}}`}
-			if err := app.activateChatPreview(result, preview); err != nil {
-				t.Fatal(err)
-			}
-			app.chatFullscreen = fullscreen
-			state := app.chatPreview
-			state.editor = woxui.NewTextEditor("unsent draft")
-			state.scroll.Scroll(-158, 200)
-			state.expandedRounds["round"] = true
-			question := &aiQuestion{QuestionID: "pending"}
-			state.question = question
-			state.questionEditor = woxui.NewTextEditor("partial answer")
-			state.nextModel = &aiModel{Name: "next-model"}
-			state.attachments = []common.AIChatAttachment{{ID: "draft-attachment"}}
-			for _, streaming := range []bool{true, false} {
-				preview.PreviewData = fmt.Sprintf(`{"ActiveChat":{"Id":"chat","IsStreaming":%t}}`, streaming)
-				if err := app.activateChatPreview(result, preview); err != nil {
-					t.Fatal(err)
-				}
-				if app.chatPreview != state || state.editor.State().Text != "unsent draft" || state.scroll.Position(200) != 42 || !state.expandedRounds["round"] {
-					t.Fatal("stream update discarded local interaction state")
-				}
-				if state.question != question || state.questionEditor.State().Text != "partial answer" || len(state.attachments) != 1 || state.attachments[0].ID != "draft-attachment" {
-					t.Fatal("stream update discarded the pending question or draft attachments")
-				}
-				if state.chat.IsStreaming != streaming || state.chat.Model.Name != "next-model" || app.chatFullscreen != fullscreen {
-					t.Fatal("stream update lost remote data, model selection, or fullscreen ownership")
-				}
-				if _, err := app.chatPreviewSnapshotFor(result, preview); err != nil {
-					t.Fatalf("updated preview identity is not renderable: %v", err)
-				}
-			}
-			app.applyChatResponse(chatData{ID: "chat", Title: "newer service snapshot"})
-			preview.PreviewData = `{"ActiveChat":{"Id":"chat","Title":"stale preview"}}`
-			if err := app.activateChatPreview(result, preview); err != nil {
-				t.Fatal(err)
-			}
-			if state.chat.Title != "newer service snapshot" {
-				t.Fatal("preview overwrote the authoritative chat service snapshot")
-			}
-		})
+	if launcherToolbarHeightIncluded(true, true, false) {
+		t.Fatal("HideToolbar must omit the toolbar row")
 	}
 }
 
@@ -268,13 +104,10 @@ func TestMRUResultsResetGridLayout(t *testing.T) {
 }
 
 func TestLauncherChromeHiddenForPreviewOnlyModes(t *testing.T) {
-	if !launcherChromeHidden(showAppParams{HideQueryBox: true, HideToolbar: true}, false) {
+	if !launcherChromeHidden(showAppParams{HideQueryBox: true, HideToolbar: true}) {
 		t.Fatal("hidden query box and toolbar should expose preview close behavior")
 	}
-	if !launcherChromeHidden(showAppParams{}, true) {
-		t.Fatal("chat fullscreen should expose preview close behavior")
-	}
-	if launcherChromeHidden(showAppParams{HideQueryBox: true}, false) {
+	if launcherChromeHidden(showAppParams{HideQueryBox: true}) {
 		t.Fatal("partially hidden launcher chrome should keep normal navigation behavior")
 	}
 }
@@ -623,17 +456,6 @@ func TestLauncherShowPreservesPreviewFocusWithoutQueryBox(t *testing.T) {
 	}
 	if !host.HasFocus(previewview.WebViewPreviewFocusKey) {
 		t.Fatalf("focused key = %q, want WebView preview", host.FocusedKey())
-	}
-}
-
-func TestQueryCanFocusWhileChatPreviewIsActive(t *testing.T) {
-	app := &App{}
-	if !app.queryCanFocus() {
-		t.Fatal("query input should own focus without an active overlay")
-	}
-	app.chatPreview = &chatPreviewState{active: true}
-	if !app.queryCanFocus() {
-		t.Fatal("active chat input prevented the query from accepting pointer focus")
 	}
 }
 
@@ -1396,17 +1218,6 @@ func TestResultPreviewBecameVisible(t *testing.T) {
 	}
 	if resultPreviewBecameVisible(queryPreview{}, nil) {
 		t.Fatal("missing preview update should not recalculate window bounds")
-	}
-}
-
-func TestLivePreviewBypassesPreparedSectionBoundary(t *testing.T) {
-	for _, kind := range []string{"media", "chat"} {
-		app := &App{}
-		result := queryResult{Preview: queryPreview{PreviewType: kind, PreviewData: `{"title":"Track"}`}}
-		widget := app.buildPreviewSection(result, viewSnapshot{palette: defaultPalette()}, 700, 400, 1)
-		if _, wrapped := widget.(woxwidget.Boundary[launcherPreparedSectionProps]); wrapped {
-			t.Fatalf("%s preview retained the full-section boundary", kind)
-		}
 	}
 }
 

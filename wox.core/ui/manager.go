@@ -17,7 +17,6 @@ import (
 	"sync"
 	"time"
 	"wox/account"
-	"wox/ai"
 	"wox/analytics"
 	"wox/common"
 	"wox/common/icons"
@@ -1476,27 +1475,6 @@ func (m *Manager) PostSettingUpdate(ctx context.Context, key string, value strin
 		util.Go(ctx, "check for updates after setting change", func() {
 			updater.CheckForUpdatesWithCallback(ctx, nil)
 		})
-	case "AIProviders":
-		plugin.GetPluginManager().GetUI().ReloadChatResources(ctx, "models")
-		if chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx); chater != nil {
-			chater.EnsureDefaultModelValid(ctx)
-		}
-	case "AIMCPServers":
-		// Connecting stdio servers (npx/uvx) can download packages and must not block Save.
-		if chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx); chater != nil {
-			util.Go(ctx, "reload MCP servers after setting change", func() {
-				chater.ReloadMCPServers(util.NewTraceContext(), true)
-			})
-		}
-	case "AIDisabledBuiltinTools":
-		ai.SetDisabledBuiltinTools(setting.GetSettingManager().GetWoxSetting(ctx).AIDisabledBuiltinTools.Get())
-		plugin.GetPluginManager().GetUI().ReloadChatResources(ctx, "tools")
-	case "AISkills":
-		if chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx); chater != nil {
-			if err := chater.ReloadSkills(ctx); err != nil {
-				logger.Error(ctx, fmt.Sprintf("failed to reload AI skills: %s", err.Error()))
-			}
-		}
 	}
 }
 
@@ -1960,7 +1938,6 @@ func (m *Manager) ExitApp(ctx context.Context) {
 	m.exitOnce.Do(func() {
 		util.GetLogger().Info(ctx, "start quitting")
 		plugin.GetPluginManager().Stop(ctx)
-		ai.ResetMCPClients()
 		shell.CloseLifetimeBoundJob()
 		diagnostic.GetManager().MarkCleanExit(ctx)
 		util.GetLogger().Info(ctx, "bye~")

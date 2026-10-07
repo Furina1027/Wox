@@ -65,7 +65,6 @@ var themeEditorColorGroups = []themeColorGroup{
 
 type themeEditorPreviewState struct {
 	surfaces *woxcomponent.ThemeSurfaceSet
-	ai       themeEditorAIState
 	formFieldsState
 	key            string
 	raw            map[string]any
@@ -87,7 +86,6 @@ type themeEditorPreviewState struct {
 
 type themeEditorPreviewSnapshot struct {
 	surfaces *woxcomponent.ThemeSurfaceSet
-	ai       themeEditorAIState
 	formFieldsSnapshot
 	raw         map[string]any
 	key         string
@@ -186,9 +184,6 @@ func (a *App) loadSettingsThemeEditor() error {
 	if err := a.runOnUI("resume settings theme editor", func() {
 		state := a.themeSettings.ThemeEditor()
 		retained = state != nil && (state.saving || themeEditorDirtyLocked(state))
-		if retained {
-			a.preloadThemeEditorModels()
-		}
 	}); err != nil {
 		return err
 	}
@@ -218,7 +213,6 @@ func (a *App) loadSettingsThemeEditor() error {
 	return a.runOnUI("apply settings theme editor", func() {
 		a.themeSettings.SetThemeEditor(newThemeEditorState(fmt.Sprintf("settings-theme|%x", hash[:8]), raw))
 		a.themeSettings.ThemeEditor().surfaces = fromCoreTheme(theme).Surfaces
-		a.preloadThemeEditorModels()
 		a.preloadDemoWallpaper(true)
 		a.invalidateThemeEditorWindow()
 	})
@@ -232,7 +226,6 @@ func snapshotThemeEditorPreviewLocked(state *themeEditorPreviewState) *themeEdit
 	return &themeEditorPreviewSnapshot{
 		surfaces:           state.surfaces,
 		formFieldsSnapshot: snapshotFormFieldsLocked(&state.formFieldsState),
-		ai:                 state.ai,
 		raw:                copyThemeMap(state.raw),
 		key:                state.key,
 		initial:            copyStringMap(state.initial),

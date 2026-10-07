@@ -41,9 +41,6 @@ const (
 	// enable this feature to get query env in plugin
 	MetadataFeatureQueryEnv MetadataFeatureName = "queryEnv"
 
-	// enable this feature to chat with ai in plugin
-	MetadataFeatureAI MetadataFeatureName = "ai"
-
 	// enable this feature to execute custom deep link in plugin
 	MetadataFeatureDeepLink MetadataFeatureName = "deepLink"
 

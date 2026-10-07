@@ -10,45 +10,6 @@ import (
 	woxwidget "wox/ui/widget"
 )
 
-// TestThemeEditorSharedChatSendStaysVisible covers the shared composer at narrow widths and multiple lines.
-func TestThemeEditorSharedChatSendStaysVisible(t *testing.T) {
-	for _, width := range []float32{500, 800} {
-		for _, prompt := range []string{"Round the corners", "one\ntwo\nthree\nfour\nfive"} {
-			paneWidth, paneHeight := ThemeEditorInspectorSize(width, 640, false)
-			inputHeight := previewview.ChatComposerHeightForLines(0, previewview.ChatComposerVisibleLines(prompt, paneWidth-20, nil, nil))
-			chatProps := previewview.ChatPreviewProps{Key: "theme-editor-ai", Width: paneWidth, Height: paneHeight - 40,
-				Messages: previewview.ChatMessagesProps{Width: paneWidth - 20, Height: paneHeight - 40 - inputHeight - 14},
-				Input:    previewview.ChatInputProps{Key: "theme-editor-ai", Width: paneWidth - 20, Height: inputHeight, Editing: woxui.TextEditingState{Text: prompt}, Model: "Model", ModelWidth: 120, ActionLabel: "Send"}}
-			props := ThemeEditorSettingsProps{Width: width, Height: 640, AIExpanded: true,
-				AIAssistant: previewview.ChatConversation(previewview.ChatConversationProps{ChatPreviewProps: chatProps})}
-			host := woxwidget.NewHost(func(woxui.FrameInfo) woxwidget.Widget { return ThemeEditorSettingsView(props) })
-			host.AttachServices(settingsWindowHostServices{})
-			host.Frame(&woxui.DisplayList{}, woxui.FrameInfo{Size: woxui.Size{Width: width, Height: 640}, Scale: 1.5, PixelSize: woxui.PixelSize{Width: int(width * 1.5), Height: 960}})
-			bounds, ok := host.BoundsForKey("chat-send-theme-editor-ai")
-			if !ok || bounds.Y+bounds.Height > 640 || bounds.X+bounds.Width > width || (width >= 760 && bounds.X < width-340) {
-				t.Fatalf("send outside pane: width=%v bounds=%+v", width, bounds)
-			}
-			if _, visible := host.BoundsForKey("theme-editor-search"); visible {
-				t.Fatal("property search must be hidden while chatting")
-			}
-			modeBounds, modeVisible := host.BoundsForKey("theme-editor-mode-1")
-			if !modeVisible {
-				t.Fatal("AI mode switch must remain visible in chat")
-			}
-			props.AIExpanded = false
-			props.AIAssistant = nil
-			host.Frame(&woxui.DisplayList{}, woxui.FrameInfo{Size: woxui.Size{Width: width, Height: 640}, Scale: 1.5, PixelSize: woxui.PixelSize{Width: int(width * 1.5), Height: 960}})
-			if _, visible := host.BoundsForKey("theme-editor-search"); visible {
-				t.Fatal("property search must remain removed in editing mode")
-			}
-			if bounds, visible := host.BoundsForKey("theme-editor-mode-1"); !visible || bounds != modeBounds {
-				t.Fatal("mode switch moved when returning to properties")
-			}
-			host.Dispose()
-		}
-	}
-}
-
 // TestThemeEditorFieldErrorPlacement keeps validation beside the value that needs correction.
 func TestThemeEditorFieldErrorPlacement(t *testing.T) {
 	row := themeEditorPropertyRow(ThemeEditorSettingsProps{}, ThemeEditorColorToken{Key: "AppBorderRadius", Numeric: true, Value: "bad", Error: "Enter a non-negative whole number."}, 324).(woxwidget.Container).Child.(woxwidget.Flex)

@@ -12,32 +12,28 @@ import (
 )
 
 type formFieldCallbacks struct {
-	idPrefix          string
-	labelWidth        float32
-	settingsLayout    bool
-	alignHotkeyRight  bool
-	hotkeyError       string
-	imageScale        float32
-	focus             func(index int)
-	blur              func(index int)
-	change            func(index, delta int)
-	setText           func(index int, value string)
-	onKey             func(woxui.KeyEvent) bool
-	openTable         func(index int)
-	openChoice        func(index int, anchor woxui.Rect)
-	openAIModelChoice func(index int, provider bool, anchor woxui.Rect)
-	setAIModelName    func(index int, value string)
-	finishAIModelEdit func(index int, value string)
-	openAISettings    func()
-	pickDir           func(index int)
-	pickApp           func(index int)
-	recordKey         func(index int)
-	openModel         func(index int, anchor woxui.Rect)
-	runServiceAction  func(actionID string)
-	openLink          func(target string)
-	serviceBusy       bool
-	serviceError      string
-	fieldErrors       map[string]string
+	idPrefix         string
+	labelWidth       float32
+	settingsLayout   bool
+	alignHotkeyRight bool
+	hotkeyError      string
+	imageScale       float32
+	focus            func(index int)
+	blur             func(index int)
+	change           func(index, delta int)
+	setText          func(index int, value string)
+	onKey            func(woxui.KeyEvent) bool
+	openTable        func(index int)
+	openChoice       func(index int, anchor woxui.Rect)
+	pickDir          func(index int)
+	pickApp          func(index int)
+	recordKey        func(index int)
+	openModel        func(index int, anchor woxui.Rect)
+	runServiceAction func(actionID string)
+	openLink         func(target string)
+	serviceBusy      bool
+	serviceError     string
+	fieldErrors      map[string]string
 }
 
 // buildFormPanel maps action form state into the shared form view.
@@ -148,11 +144,6 @@ func (a *App) buildFormField(fields formFieldsSnapshot, callbacks formFieldCallb
 		return a.buildFormHotkey(fields, callbacks, palette, index, definition, width, height)
 	case "app":
 		return a.buildFormApp(fields, callbacks, palette, index, definition, width, height)
-	case "selectAIModel":
-		if callbacks.openAIModelChoice != nil {
-			return a.buildFormAIModelField(fields, callbacks, palette, index, definition, width, height)
-		}
-		fallthrough
 	case "select":
 		selectedLabel := fields.values[value.Key]
 		for _, option := range value.Options {
@@ -171,63 +162,7 @@ func (a *App) buildFormField(fields formFieldsSnapshot, callbacks formFieldCallb
 	}
 }
 
-// buildFormAIModelField maps the JSON-backed model value into Flutter's provider and model controls.
-func (a *App) buildFormAIModelField(fields formFieldsSnapshot, callbacks formFieldCallbacks, palette woxcomponent.ControlTheme, index int, definition formDefinition, width, height float32) woxwidget.Widget {
-	models := aiModelsFromOptions(definition.Value.Options)
-	selected := aiModel{}
-	_ = json.Unmarshal([]byte(fields.values[definition.Value.Key]), &selected)
-	providerLabel := selected.Provider
-	if selected.ProviderAlias != "" {
-		providerLabel = selected.ProviderAlias
-	}
-	if providerLabel == "" {
-		providerLabel = a.translate("i18n:ui_ai_model_selector_not_selected")
-	}
-	modelLabel := selected.Name
-	if modelLabel == "" {
-		modelLabel = a.translate("i18n:ui_ai_model_selector_not_selected")
-	}
-
-	var providerIcon *woxui.Image
-	for _, provider := range a.aiSettings.ProviderCatalog() {
-		if provider.Name == selected.Provider {
-			providerIcon = a.imageForSurface(provider.Icon, physicalImageSize(18, callbacks.imageScale), palette.Background)
-			break
-		}
-	}
-	foreground := palette.Text
-	return launcherview.FormAIModelField(launcherview.FormAIModelFieldProps{
-		ID: fmt.Sprintf("%s-field-%d", callbacks.idPrefix, index), Label: a.translate(definition.Value.Label), Description: a.translate(definition.Value.Tooltip),
-		Error:    callbacks.fieldErrors[definition.Value.Key],
-		Provider: providerLabel, Model: modelLabel, ProviderIcon: providerIcon, ModelIcon: providerIcon, ModelsAvailable: len(models) > 0,
-		ModelNameHint: a.translate("i18n:ui_ai_model_selector_model_name"),
-		ManageLabel:   a.translate("i18n:ui_ai_model_selector_open_ai_settings"),
-		Width:         width, Height: height, LabelWidth: callbacks.labelWidth, Focused: fields.active && fields.focused == index,
-		EditIcon:   a.imageForTint(settingControlIconSource("edit"), &foreground, physicalImageSize(18, callbacks.imageScale)),
-		ListIcon:   a.imageForTint(settingControlIconSource("list"), &foreground, physicalImageSize(18, callbacks.imageScale)),
-		ManageIcon: a.imageForTint(settingControlIconSource("link"), &foreground, physicalImageSize(18, callbacks.imageScale)),
-		Window:     a.formFieldNativeWindow(callbacks.idPrefix), Theme: palette,
-		OnOpenLink:         callbacks.openLink,
-		OnManageModels:     callbacks.openAISettings,
-		OnProviderTap:      func(anchor woxui.Rect) { callbacks.openAIModelChoice(index, true, anchor) },
-		OnModelTap:         func(anchor woxui.Rect) { callbacks.openAIModelChoice(index, false, anchor) },
-		OnModelNameChanged: func(value string) { callbacks.setAIModelName(index, value) },
-		OnFinishEdit:       func(value string) { callbacks.finishAIModelEdit(index, value) },
-		OnEditModeChanged:  func(bool) { callbacks.focus(index) },
-	})
-}
-
-func aiModelsFromOptions(options []formOption) []aiModel {
-	models := make([]aiModel, 0, len(options))
-	for _, option := range options {
-		var model aiModel
-		if json.Unmarshal([]byte(option.Value), &model) == nil && strings.TrimSpace(model.Name) != "" && strings.TrimSpace(model.Provider) != "" {
-			models = append(models, model)
-		}
-	}
-	return models
-}
-
+// buildFormModelField maps the local dictation and OCR model id onto the shared model button.
 func (a *App) buildFormModelField(fields formFieldsSnapshot, callbacks formFieldCallbacks, palette woxcomponent.ControlTheme, index int, definition formDefinition, width, height float32) woxwidget.Widget {
 	selectedID := fields.values[definition.Value.Key]
 	selectedLabel := selectedID

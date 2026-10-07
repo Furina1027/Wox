@@ -61,23 +61,6 @@ func (a *App) formTableDisplayValue(column formTableColumn, row map[string]any) 
 	if column.Type == "password" {
 		return woxui.MaskProtectedText(value)
 	}
-	if column.Type == "aiMCPServerTools" {
-		switch tools := row[column.Key].(type) {
-		case []any:
-			return fmt.Sprintf("%d tools", len(tools))
-		case []string:
-			return fmt.Sprintf("%d tools", len(tools))
-		}
-	}
-	if column.Type == "aiSkillSource" {
-		if strings.EqualFold(value, "builtin") {
-			return a.translate("i18n:ui_ai_skill_type_builtin")
-		}
-		if strings.EqualFold(value, "remote") {
-			return a.translate("i18n:ui_ai_skill_type_remote")
-		}
-		return a.translate("i18n:ui_ai_skill_type_local")
-	}
 	if column.Type == "checkbox" {
 		if value == "true" {
 			return "On"
@@ -89,12 +72,6 @@ func (a *App) formTableDisplayValue(column formTableColumn, row map[string]any) 
 			if option.Value == value {
 				return a.translate(option.Label)
 			}
-		}
-	}
-	if column.Type == "selectAIModel" && value != "" {
-		var model aiModel
-		if json.Unmarshal([]byte(value), &model) == nil {
-			return aiModelLabel(model)
 		}
 	}
 	if column.Type == "app" {
@@ -174,7 +151,7 @@ func (a *App) formTableFieldProps(fields formFieldsSnapshot, callbacks formField
 		}
 	}
 	onTooltip := (func(bool, string, woxui.Rect))(nil)
-	if callbacks.idPrefix == "hotkey-settings" || callbacks.idPrefix == "general-settings" || callbacks.idPrefix == "plugin-settings" || callbacks.idPrefix == "ai-settings" {
+	if callbacks.idPrefix == "hotkey-settings" || callbacks.idPrefix == "general-settings" || callbacks.idPrefix == "plugin-settings" {
 		onTooltip = a.setSettingChoiceTooltip
 	}
 	openTable := func() {
@@ -202,11 +179,6 @@ func (a *App) formTableFieldProps(fields formFieldsSnapshot, callbacks formField
 	var demoIcon *woxui.Image
 	if demoKind != "" {
 		demoIcon = a.imageForTint(settingControlIconSource("demo"), &theme.Text, physicalImageSize(18, callbacks.imageScale))
-	}
-	if callbacks.idPrefix == "plugin-settings" && definition.Value.Key == "commands" && a.selectedPluginID() == aiCommandPluginID {
-		secondaryLabel = a.translate("i18n:ui_ai_command_template_add_from_store")
-		secondaryIcon = a.imageForTint(settingControlIconSource("store"), &foreground, headerIconRasterSize)
-		onSecondary = func() { a.openAICommandTemplatePicker(index) }
 	}
 	hideCloneAction := false
 	hideAddAction := false
@@ -257,7 +229,7 @@ func (a *App) formTableFieldProps(fields formFieldsSnapshot, callbacks formField
 			a.beginCloneFormTableRowDirect()
 		},
 		OnDeleteRow: func(rowIndex int) {
-			if rowIndex < 0 || rowIndex >= len(rows) || formTableSkillRowReadOnly(definition, rows[rowIndex]) {
+			if rowIndex < 0 || rowIndex >= len(rows) {
 				return
 			}
 			openTable()
@@ -265,15 +237,6 @@ func (a *App) formTableFieldProps(fields formFieldsSnapshot, callbacks formField
 			a.beginDeleteFormTableRowDirect()
 		},
 	}
-}
-
-func hasMCPServerToolsColumn(columns []formTableColumn) bool {
-	for _, column := range columns {
-		if column.Type == "aiMCPServerTools" {
-			return true
-		}
-	}
-	return false
 }
 
 func (a *App) formTableViewRows(definition formDefinition, columns []formTableColumn, rows []map[string]any, theme woxcomponent.ControlTheme, imageScale float32) []launcherview.FormTableRow {
@@ -284,9 +247,6 @@ func (a *App) formTableViewRows(definition formDefinition, columns []formTableCo
 	ordered := make([]indexedRow, len(rows))
 	for index, row := range rows {
 		ordered[index] = indexedRow{index: index, row: row}
-	}
-	if hasMCPServerToolsColumn(columns) {
-		overlayMCPServerToolNames(rows)
 	}
 	if definition.Value.SortColumnKey != "" {
 		sort.SliceStable(ordered, func(left, right int) bool {
@@ -312,7 +272,7 @@ func (a *App) formTableViewRows(definition formDefinition, columns []formTableCo
 				cells[0].SearchText = status
 			}
 		}
-		viewRows = append(viewRows, launcherview.FormTableRow{Index: current.index, ReadOnly: formTableSkillRowReadOnly(definition, current.row), Cells: cells, Status: status})
+		viewRows = append(viewRows, launcherview.FormTableRow{Index: current.index, Cells: cells, Status: status})
 	}
 	return viewRows
 }
@@ -350,12 +310,6 @@ func (a *App) formTableViewCell(column formTableColumn, row map[string]any, them
 	}
 	if column.Type == "ignoredApps" {
 		return a.formTableIgnoreRuleAppsCell(row, imageScale, theme.Background)
-	}
-	if column.Type == "aiModelStatus" {
-		statusColor := woxui.Color{R: 69, G: 184, B: 88, A: 255}
-		cell.Text = ""
-		cell.IndicatorColor = &statusColor
-		return cell
 	}
 	if column.Type == "checkbox" {
 		cell.Text = ""
@@ -427,12 +381,6 @@ func (a *App) formTableIgnoreRuleAppsCell(row map[string]any, imageScale float32
 
 // buildFormTableOverlay maps table editor state into the shared modal view.
 func (a *App) buildFormTableOverlay(snapshot *formTableEditorSnapshot, palette woxcomponent.ControlTheme, width, height, imageScale float32) woxwidget.Widget {
-	if snapshot.skillAdd != nil {
-		return a.buildFormTableSkillAddDialog(snapshot.skillAdd, palette, width, height, imageScale)
-	}
-	if snapshot.mcpJSONImport != nil {
-		return a.buildFormTableMCPJSONImportDialog(snapshot.mcpJSONImport, palette, width, height, imageScale)
-	}
 	if snapshot.windowGroupEditor != nil {
 		return a.buildWindowManagerGroupEditor(snapshot.windowGroupEditor, palette, width, height, imageScale)
 	}
@@ -629,17 +577,11 @@ func (a *App) buildFormTableList(snapshot *formTableEditorSnapshot, palette woxc
 	for _, row := range snapshot.rows {
 		rows = append(rows, a.formTableRowSummary(snapshot.definition, row))
 	}
-	selectedReadOnly := snapshot.selected >= 0 && snapshot.selected < len(snapshot.rows) && formTableSkillRowReadOnly(snapshot.definition, snapshot.rows[snapshot.selected])
-	canEdit := !snapshot.invalid && !snapshot.saving && snapshot.selected >= 0 && snapshot.definition.Value.Key != "AISkills" && !selectedReadOnly
-	canDelete := !snapshot.invalid && !snapshot.saving && snapshot.selected >= 0 && !selectedReadOnly
+	canEdit := !snapshot.invalid && !snapshot.saving && snapshot.selected >= 0
+	canDelete := !snapshot.invalid && !snapshot.saving && snapshot.selected >= 0
 	addLabel := "Add row"
 	onAdd := a.beginAddFormTableRow
 	canAdd := !snapshot.invalid && !snapshot.saving
-	if snapshot.definition.Value.Key == "AISkills" {
-		// The skills list shares Flutter's tabbed local/remote add dialog.
-		addLabel = a.translate("i18n:ui_ai_skill_add")
-		onAdd = a.openFormTableSkillAdd
-	}
 	if snapshot.definition.Value.Key == "ResultBindings" {
 		canAdd = false
 		onAdd = nil
@@ -850,7 +792,7 @@ func (a *App) buildFormTableRowField(fields formFieldsSnapshot, callbacks formFi
 			callbacks.focus(index)
 			callbacks.change(index, 1)
 		}
-	case "select", "selectAIModel":
+	case "select":
 		selectedLabel := fieldValue
 		var selectedIcon woxImage
 		for _, option := range value.Options {

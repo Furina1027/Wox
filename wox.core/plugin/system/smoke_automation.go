@@ -82,7 +82,6 @@ func (*smokeAutomationPlugin) GetMetadata() plugin.Metadata {
 			{Command: smokeAutomationResultBindingCommand, Description: "Result hotkey and alias fixture"},
 			{Command: smokeAutomationListCommand, Description: "500 list results"},
 			{Command: smokeAutomationGridCommand, Description: "500 grid results with group headers"},
-			{Command: smokeAutomationChatCommand, Description: "200 chat messages with streaming updates"},
 			{Command: smokeAutomationWarmCacheCommand, Description: "Repeated text and image warm-cache fixture"},
 		},
 		SupportedOS: []string{util.PlatformMacOS, util.PlatformWindows, util.PlatformLinux},
@@ -136,8 +135,6 @@ func (p *smokeAutomationPlugin) Query(ctx context.Context, query plugin.Query) p
 		return response
 	case smokeAutomationGridCommand:
 		return queryGridFixture()
-	case smokeAutomationChatCommand:
-		return p.queryChatFixture()
 	case smokeAutomationWarmCacheCommand:
 		return queryWarmCacheFixture()
 	default:

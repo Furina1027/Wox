@@ -146,7 +146,7 @@ func GetPasteToActiveWindowAction(ctx context.Context, api plugin.API, windowNam
 		return plugin.QueryResultAction{}, fmt.Errorf("no active window")
 	}
 
-	actionName := i18n.GetI18nManager().TranslateWox(ctx, "plugin_ai_command_paste")
+	actionName := i18n.GetI18nManager().TranslateWox(ctx, "plugin_clipboard_primary_action_paste_to_active_app")
 	if windowName != "" {
 		actionName = fmt.Sprintf(i18n.GetI18nManager().TranslateWox(ctx, "plugin_paste_to_window"), window.CompactTitle(windowName, window.ActionTitleMaxRunes))
 	}
@@ -187,15 +187,14 @@ func pasteTextToActiveWindow(ctx context.Context, api plugin.API, windowName str
 		return fmt.Errorf("paste text is empty")
 	}
 	if err := clipboard.WriteText(text); err != nil {
-		return fmt.Errorf("write ai command answer to clipboard failed: %w", err)
+		return fmt.Errorf("write text to clipboard failed: %w", err)
 	}
 	return pasteToActiveWindow(ctx, api, windowPid)
 }
 
 func pasteToActiveWindow(ctx context.Context, api plugin.API, windowPid int) error {
-	// Shared paste helper: AI command Run And Paste needs the same activation
-	// delay as the existing paste action, but it must prepare clipboard content
-	// only after the model has produced a final answer.
+	// Shared paste helper: callers that prepare clipboard content before pasting
+	// need the same activation delay as the existing paste action.
 	if windowPid > 0 {
 		if !window.ActivateWindowByPid(windowPid) {
 			api.Log(ctx, plugin.LogLevelError, fmt.Sprintf("activate window failed, pid=%d", windowPid))

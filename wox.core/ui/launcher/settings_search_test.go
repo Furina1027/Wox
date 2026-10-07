@@ -85,11 +85,11 @@ func TestSettingsSearchActivatesThemeEditor(t *testing.T) {
 	deps, _ := newSearchControllerDeps()
 	shared := newSharedEditState()
 	app := &App{
-		settingsSearch:     newSettingsSearchController(deps),
-		pluginSettings:     newPluginSettingsController(deps),
-		themeSettings:      newThemeSettingsController(deps),
-		hotkeySettings:     newHotkeySettingsController(deps),
-		aiSettings:         newAISettingsController(deps),
+		settingsSearch: newSettingsSearchController(deps),
+		pluginSettings: newPluginSettingsController(deps),
+		themeSettings:  newThemeSettingsController(deps),
+		hotkeySettings: newHotkeySettingsController(deps),
+
 		generalSettings:    newGeneralSettingsController(deps, shared),
 		cloudSettings:      newCloudSettingsController(deps),
 		usageSettings:      newUsageSettingsController(deps),

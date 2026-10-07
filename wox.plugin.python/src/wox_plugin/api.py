@@ -9,7 +9,6 @@ and provides access to UI control, settings, logging, and more.
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, List, Optional, Protocol
 
-from .models.ai import AIModel, ChatStreamCallback, Conversation
 from .models.attention import PushAttentionRequest
 from .models.context import Context
 from .models.log import LogLevel
@@ -166,7 +165,6 @@ class PublicAPI(Protocol):
         - Logging: log
         - Internationalization: get_translation
         - Results: get_updatable_result, update_result
-        - AI: ai_chat_stream
         - MRU: on_mru_restore
         - Callbacks: on_unload, on_deep_link
         - Commands: register_query_commands
@@ -613,44 +611,6 @@ class PublicAPI(Protocol):
 
     async def invoke_plugin_tool(self, ctx: Context, option: InvokePluginToolOption) -> InvokePluginToolResult:
         """Invoke another plugin's registered tool. Requires Wox >= 2.4.5."""
-        ...
-
-    async def ai_chat_stream(
-        self,
-        ctx: Context,
-        model: AIModel,
-        conversations: List[Conversation],
-        callback: ChatStreamCallback,
-    ) -> None:
-        """
-        Start an AI chat stream.
-
-        Sends a conversation history to an AI model and receives
-        streaming responses via the callback.
-
-        Args:
-            ctx: Context
-            model: AI model to use (provider and name)
-            conversations: Conversation history
-            callback: Stream callback function
-                     Receives ChatStreamData with status and content
-
-        Example:
-            def on_stream_data(stream_data: ChatStreamData):
-                if stream_data.status == ChatStreamDataType.STREAMING:
-                    update_display(stream_data.data)
-                elif stream_data.status == ChatStreamDataType.FINISHED:
-                    finalize(stream_data.data)
-
-            await api.ai_chat_stream(
-                ctx,
-                model=AIModel(name="gpt-4", provider="openai"),
-                conversations=[
-                    Conversation.new_user_message("Hello!"),
-                ],
-                callback=on_stream_data
-            )
-        """
         ...
 
     async def on_mru_restore(

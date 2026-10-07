@@ -1,6 +1,7 @@
 package launcher
 
 import (
+	"context"
 	"testing"
 
 	"wox/plugin"
@@ -81,7 +82,7 @@ func TestResultDragHoldEndsOnInteractionWithoutNativeBlur(t *testing.T) {
 
 func TestResultDragDeliversCapturedCallback(t *testing.T) {
 	var got plugin.DragOutEvent
-	app := &App{}
+	app := &App{lifecycleCtx: context.Background()}
 	app.finishResultFileDrag(woxui.FileDragStatusSuccess, pendingResultFileDrag{
 		resultID: "result", files: []string{"file"}, preventHide: true,
 		notify: func(event plugin.DragOutEvent) { got = event },

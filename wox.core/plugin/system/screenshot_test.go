@@ -9,10 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-	"wox/common/icons"
 	"wox/plugin"
-	"wox/setting"
-	"wox/setting/definition"
 	"wox/util/screenshotedit"
 )
 
@@ -181,43 +178,6 @@ func TestScreenshotHistoryResultIncludesNotesAction(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("screenshot history actions = %#v", result.Actions)
-	}
-}
-
-func TestScreenshotAIToolbarSettingIsLastInAIGroup(t *testing.T) {
-	settings := (&ScreenshotPlugin{}).GetMetadata().SettingDefinitions
-	if len(settings) < 2 {
-		t.Fatal("screenshot settings are missing the AI group")
-	}
-	head, ok := settings[len(settings)-2].Value.(*definition.PluginSettingValueHead)
-	if !ok || head.Content != "i18n:plugin_screenshot_ai_head" {
-		t.Fatalf("AI group head = %#v", settings[len(settings)-2].Value)
-	}
-	checkbox, ok := settings[len(settings)-1].Value.(*definition.PluginSettingValueCheckBox)
-	if !ok || checkbox.Key != screenshotAIToolbarEnabledSettingKey {
-		t.Fatalf("last setting = %#v", settings[len(settings)-1].Value)
-	}
-	if checkbox.Label != "i18n:plugin_screenshot_ai_toolbar" {
-		t.Fatalf("AI toolbar label = %q", checkbox.Label)
-	}
-}
-
-func TestScreenshotAIToolbarActionsRequiresSettingAndProvider(t *testing.T) {
-	actions := screenshotAIToolbarActions(true, true, "Send to AI Chat")
-	if len(actions) != 1 || actions[0].ID != screenshotAIExtraActionID || actions[0].Icon != icons.ControlSparkles {
-		t.Fatalf("enabled actions = %#v", actions)
-	}
-	if screenshotAIToolbarActions(false, true, "Send to AI Chat") != nil {
-		t.Fatal("disabled setting should hide the AI button")
-	}
-	if screenshotAIToolbarActions(true, false, "Send to AI Chat") != nil {
-		t.Fatal("missing AI provider should hide the AI button")
-	}
-	if hasConfiguredAIProvider(nil) || hasConfiguredAIProvider([]setting.AIProvider{}) {
-		t.Fatal("empty provider list should count as unconfigured")
-	}
-	if !hasConfiguredAIProvider([]setting.AIProvider{{Name: "openai"}}) {
-		t.Fatal("a configured provider should count as available")
 	}
 }
 

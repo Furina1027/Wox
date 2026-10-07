@@ -21,7 +21,7 @@ import {
 } from "@wox-launcher/wox-plugin"
 import { WebSocket } from "ws"
 import * as crypto from "crypto"
-import { AI } from "@wox-launcher/wox-plugin/types/ai"
+
 import { PluginInstance, PluginJsonRpcRequest, ToolbarMsgActionContext } from "./types"
 import { assertPathWithinDirectory, evictCommonJSModule, getPluginExport, loadCommonJSModule } from "./singleFile"
 
@@ -145,8 +145,6 @@ export async function handleRequestFromWox(ctx: Context, request: PluginJsonRpcR
       return onLeavePluginQuery(ctx, request)
     case "onDragOut":
       return onDragOut(ctx, request)
-    case "onLLMStream":
-      return onLLMStream(ctx, request)
     case "onMRURestore":
       return onMRURestore(ctx, request)
     case "onInvokePluginTool":
@@ -350,30 +348,6 @@ function parseDragOutStatus(status: unknown): DragOutStatus {
   return "cancel"
 }
 
-async function onLLMStream(ctx: Context, request: PluginJsonRpcRequest) {
-  const plugin = pluginInstances.get(request.PluginId)
-  if (plugin === undefined || plugin === null) {
-    logger.error(ctx, `plugin not found: ${request.PluginName}, forget to load plugin?`)
-    throw new Error(`plugin not found: ${request.PluginName}, forget to load plugin?`)
-  }
-
-  const callbackId = request.Params.CallbackId
-  const streamType = request.Params.StreamType as AI.ChatStreamDataType
-  const data = request.Params.Data
-  const reasoning = request.Params.Reasoning ?? ""
-  const callbackFunc = plugin.API.llmStreamCallbacks.get(callbackId)
-  if (callbackFunc === undefined || callbackFunc === null) {
-    logger.error(ctx, `llm stream callback not found: ${callbackId}`)
-    throw new Error(`llm stream callback not found: ${callbackId}`)
-  }
-
-  callbackFunc({
-    Status: streamType,
-    Data: data,
-    Reasoning: reasoning,
-    ToolCalls: [] // currently we don't support toolcalls from host
-  })
-}
 
 async function query(ctx: Context, request: PluginJsonRpcRequest) {
   const plugin = pluginInstances.get(request.PluginId)

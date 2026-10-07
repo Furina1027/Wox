@@ -90,9 +90,10 @@ func (h *historyStore) save(ctx context.Context) {
 	h.api.SaveSetting(ctx, settingKeyHistory, string(data), false)
 }
 
-// add prepends a new record, trims to the cap, and persists. Original content
-// is retained whenever AI refinement succeeds, while Content stays the final
-// text used for history actions and future AI context.
+// add prepends a new record, trims to the cap, and persists. OriginalContent
+// is left empty for new records because the recognized transcript is already the
+// final text, but the field is kept so legacy records that stored an alternative
+// transcript still render their comparison.
 func (h *historyStore) add(ctx context.Context, content string, originalContent string, timestamp int64, audioSessionID string) {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -158,64 +159,6 @@ func (h *historyStore) snapshot(search string) []historyRecord {
 		if strings.Contains(strings.ToLower(r.Content), search) || strings.Contains(strings.ToLower(r.OriginalContent), search) {
 			out = append(out, r)
 		}
-	}
-	return out
-}
-
-// recentContextMaxRecords caps how many prior transcripts are fed to the AI
-// refiner as context. Ten sentences give the model enough topic and tone
-// continuity for dense dictation bursts without bloating the prompt.
-const recentContextMaxRecords = 10
-
-// recentContextWindow is the maximum age (from now) of a record that still
-// counts as context. Anything older is treated as unrelated to the current
-// dictation session.
-const recentContextWindow = 10 * time.Minute
-
-// recentContextTopicGap is the minimum gap between two consecutive records
-// that marks a topic boundary. When the gap exceeds this duration, a topic
-// separator is inserted so the AI can tell the earlier block may be unrelated
-// to the current dictation.
-const recentContextTopicGap = 2 * time.Minute
-
-// recentContext returns the finalized transcripts from the last 10 minutes,
-// up to recentContextMaxRecords, oldest-first so the AI reads them in
-// chronological order. When two consecutive records are separated by more than
-// recentContextTopicGap, a "--- (topic changed) ---" marker is inserted so the
-// model can recognize a possible topic switch. The current utterance is not
-// yet in the store when this is called, so it is never included.
-func (h *historyStore) recentContext(nowMillis int64) []string {
-	cutoff := nowMillis - recentContextWindow.Milliseconds()
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	var picked []historyRecord
-	for _, r := range h.records {
-		if r.Timestamp < cutoff {
-			continue
-		}
-		picked = append(picked, r)
-		if len(picked) >= recentContextMaxRecords {
-			break
-		}
-	}
-
-	// h.records is newest-first; reverse to oldest-first for the AI prompt.
-	ordered := make([]historyRecord, len(picked))
-	for i, r := range picked {
-		ordered[len(picked)-1-i] = r
-	}
-
-	out := make([]string, 0, len(ordered)*2)
-	for i, r := range ordered {
-		if i > 0 {
-			gap := time.Duration(r.Timestamp-ordered[i-1].Timestamp) * time.Millisecond
-			if gap >= recentContextTopicGap {
-				out = append(out, "--- (topic changed) ---")
-			}
-		}
-		out = append(out, r.Content)
 	}
 	return out
 }
@@ -310,26 +253,21 @@ type dictationHistoryPreviewData struct {
 }
 
 // buildHistoryPreview routes every history record through the dedicated
-// dictation reader. AI-refined records add the original transcript comparison,
-// while plain dictation records keep the same visual language with one section.
+// dictation reader. Legacy records that stored an alternative transcript add
+// the original comparison, while plain records keep a single section.
 func buildHistoryPreview(ctx context.Context, record historyRecord, audioFiles speech.DevelopmentAudioFiles) plugin.WoxPreview {
+	// Records written before the AI polisher was removed can still carry an
+	// alternative transcript, so the comparison surface stays available.
 	originalText := strings.TrimSpace(record.OriginalContent)
-	refinedLabelKey := "plugin_dictation_history_transcript"
 	statusLabel := ""
 	isChanged := false
 	if originalText != "" {
-		refinedLabelKey = "plugin_dictation_history_ai_result"
-		statusKey := "plugin_dictation_history_ai_unchanged"
 		isChanged = record.Content != originalText
-		if isChanged {
-			statusKey = "plugin_dictation_history_ai_refined"
-		}
-		statusLabel = i18n.GetI18nManager().TranslateWox(ctx, statusKey)
 	}
 	payload, err := json.Marshal(dictationHistoryPreviewData{
 		RefinedText:         record.Content,
 		OriginalText:        originalText,
-		RefinedLabel:        i18n.GetI18nManager().TranslateWox(ctx, refinedLabelKey),
+		RefinedLabel:        i18n.GetI18nManager().TranslateWox(ctx, "plugin_dictation_history_transcript"),
 		OriginalLabel:       i18n.GetI18nManager().TranslateWox(ctx, "plugin_dictation_history_original_transcript"),
 		StatusLabel:         statusLabel,
 		IsChanged:           isChanged,

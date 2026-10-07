@@ -86,7 +86,7 @@ func TestWindowGroupEditorLeavesPrintableKeysToNativeTextInput(t *testing.T) {
 	plugins.SetForm(&pluginSettingsFormState{pluginID: windowManagerPluginID, formFieldsState: target})
 	app := &App{
 		settingsOpen: true, settingTab: "plugins", pluginSettings: plugins,
-		aiSettings: newAISettingsController(deps), hotkeySettings: newHotkeySettingsController(deps),
+		hotkeySettings: newHotkeySettingsController(deps),
 	}
 	app.settingsTableEditor = &formTableEditorState{
 		target: &plugins.Form().formFieldsState, definition: definition,

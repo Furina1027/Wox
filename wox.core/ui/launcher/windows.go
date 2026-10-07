@@ -230,7 +230,6 @@ func (a *App) invalidateAllWindows() {
 	if onboardingWindow := a.onboardingNativeWindow(); onboardingWindow != nil && onboardingWindow != a.window {
 		_ = onboardingWindow.Invalidate()
 	}
-	a.invalidateChatWindow()
 	for _, controller := range a.noteWindows {
 		if controller.managed != nil {
 			_ = controller.managed.Window().Invalidate()
@@ -275,7 +274,7 @@ func (a *App) formTableUsesSettingsWindow() bool {
 
 func (a *App) formTableTargetUsesSettingsLocked(target *formFieldsState) bool {
 	pluginForm := a.pluginSettings.Form()
-	return target != nil && ((pluginForm != nil && target == &pluginForm.formFieldsState) || target == a.aiSettings.Form() || target == a.hotkeySettings.Form() || target == a.generalQuerySettingsForm())
+	return target != nil && ((pluginForm != nil && target == &pluginForm.formFieldsState) || target == a.hotkeySettings.Form() || target == a.generalQuerySettingsForm())
 }
 
 func (a *App) formTableNativeWindow() *woxui.Window {
@@ -338,7 +337,7 @@ func (a *App) formFieldNativeWindow(idPrefix string) *woxui.Window {
 			return a.onboardingNativeWindow()
 		}
 		return a.settingsNativeWindow()
-	case "plugin-settings", "ai-settings", "cloud-form":
+	case "plugin-settings", "cloud-form":
 		return a.settingsNativeWindow()
 	case "theme-editor", "theme-editor-dialog":
 		return a.themeEditorNativeWindow()
@@ -454,7 +453,6 @@ func (a *App) onSettingsWindowClosed() {
 	a.cloudSettings.SetPlugins(nil)
 	a.cloudSettings.SetLoaded(false)
 	a.settingsTableEditor = nil
-	a.aiSettings.SetForm(nil)
 	a.abandonModelManager()
 	a.generalSettings.SetForm(nil)
 	if !a.onboardingOpen {
@@ -475,13 +473,6 @@ func (a *App) onSettingsWindowClosed() {
 		form.active = false
 	}
 	if themeEditor := a.themeSettings.ThemeEditor(); themeEditor != nil {
-		if themeEditor.ai.cancel != nil {
-			themeEditor.ai.cancel()
-			themeEditor.ai.cancel = nil
-			themeEditor.ai.busy = false
-			themeEditor.ai.request++
-			themeEditor.ai.status = ""
-		}
 		themeEditor.active = false
 	}
 	launcherVisible := a.visible

@@ -23,11 +23,6 @@ import (
 
 // buildPreview resolves controller-owned preview state into a pure preview view.
 func (a *App) buildPreview(result queryResult, palette uiPalette, width, height, imageScale float32) woxwidget.Widget {
-	return a.buildPreviewWithChatHeader(result, palette, width, height, imageScale, true)
-}
-
-// buildPreviewWithChatHeader lets preview-only windows host chat navigation in their platform title bar.
-func (a *App) buildPreviewWithChatHeader(result queryResult, palette uiPalette, width, height, imageScale float32, showChatHeader bool) woxwidget.Widget {
 	preview := a.resolvePreview(result.Preview)
 	if preview.PreviewType == "remote" {
 		return woxwidget.Container{Width: width, Height: height}
@@ -44,9 +39,6 @@ func (a *App) buildPreviewWithChatHeader(result queryResult, palette uiPalette, 
 			return previewview.PreviewError(fmt.Sprintf("Invalid media preview: %v", err), width, height, palette.componentTheme())
 		}
 		return a.buildMediaPreview(result, data, palette, width, height)
-	}
-	if preview.PreviewType == "chat" {
-		return a.buildChatPreview(result, preview, palette, width, height, imageScale, showChatHeader)
 	}
 	scrollKey := result.QueryID + "\x00" + result.ID + "\x00" + preview.PreviewType
 	if preview.PreviewType == "update" {
@@ -552,17 +544,9 @@ func (a *App) previewTags(tags []previewTag) []previewview.PreviewTag {
 	return resolved
 }
 
-// setPreviewTooltip anchors preview and chat chrome help to the window that owns the hover.
+// setPreviewTooltip anchors preview chrome help to the window that owns the hover.
 func (a *App) setPreviewTooltip(inside bool, text string, anchor woxui.Rect) {
-	a.setNativeHoverTooltip(&a.previewTooltipRevision, "go-ui-preview-tag", "update preview tag tooltip", inside, text, anchor, "top", a.previewTooltipWindow)
-}
-
-// previewTooltipWindow keeps dedicated-chat hover anchors on that window instead of the hidden launcher.
-func (a *App) previewTooltipWindow() *woxui.Window {
-	if window := a.chatNativeWindow(); window != nil && (a.chatWindowFocused || !a.visible) {
-		return window
-	}
-	return a.window
+	a.setNativeHoverTooltip(&a.previewTooltipRevision, "go-ui-preview-tag", "update preview tag tooltip", inside, text, anchor, "top", func() *woxui.Window { return a.window })
 }
 
 func previewColorWithOpacity(color woxui.Color, opacity float32) woxui.Color {

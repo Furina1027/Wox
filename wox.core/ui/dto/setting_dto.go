@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"wox/common"
 	"wox/i18n"
 	"wox/setting"
 )
@@ -20,23 +19,19 @@ type WoxSettingDto struct {
 	// OnboardingFinished is sent with the regular settings DTO so UI can
 	// update the guide completion flag through the existing key-value API and
 	// avoid a separate first-run state endpoint.
-	OnboardingFinished     bool
-	HideOnLostFocus        bool
-	ShowTray               bool
-	LangCode               i18n.LangCode
-	QueryHotkeys           []setting.QueryHotkey
-	QueryAliases           []setting.QueryAlias
-	TrayQueries            []setting.TrayQuery
-	LaunchMode             setting.LaunchMode
-	StartPage              setting.StartPage
-	AIProviders            []setting.AIProvider
-	AIMCPServers           []common.AIChatMCPServerConfig
-	AISkills               []common.Skill
-	AIDisabledBuiltinTools []string
-	HttpProxyEnabled       bool
-	HttpProxyUrl           string
-	ShowPosition           setting.PositionType
-	IsLinuxWaylandSession  bool
+	OnboardingFinished    bool
+	HideOnLostFocus       bool
+	ShowTray              bool
+	LangCode              i18n.LangCode
+	QueryHotkeys          []setting.QueryHotkey
+	QueryAliases          []setting.QueryAlias
+	TrayQueries           []setting.TrayQuery
+	LaunchMode            setting.LaunchMode
+	StartPage             setting.StartPage
+	HttpProxyEnabled      bool
+	HttpProxyUrl          string
+	ShowPosition          setting.PositionType
+	IsLinuxWaylandSession bool
 	// IsEvdevReadAvailable reports whether evdev keyboard devices are readable
 	// (user is in the 'input' group). UI uses this to decide whether to
 	// show the Wayland double-modifier hotkey guidance prompt.

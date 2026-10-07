@@ -31,8 +31,8 @@ var appIconWindows []byte
 //go:embed others
 var OthersFS embed.FS
 
-//go:embed ai
-var AIFS embed.FS
+//go:embed plugin_templates
+var PluginTemplatesFS embed.FS
 
 var embedThemes = []string{}
 
@@ -66,19 +66,10 @@ func Extract(ctx context.Context) error {
 		return othersErr
 	}
 
-	// Built-in skills must be available in installed builds, not only in the source tree.
-	for _, name := range []string{"wox-plugin-creator", "wox-theme-creator"} {
-		if _, err := AIFS.ReadFile("ai/skills/" + name + "/SKILL.md"); err != nil {
-			return fmt.Errorf("embedded %s skill is missing; run make sync-ai-skills: %w", name, err)
-		}
-		builtinSkillDirectory := path.Join(util.GetLocation().GetAISkillsDirectory(), name)
-		if err := os.RemoveAll(builtinSkillDirectory); err != nil {
-			return err
-		}
-	}
-	aiErr := extractFiles(ctx, AIFS, filepath.Dir(util.GetLocation().GetAISkillsDirectory()), "ai", true)
-	if aiErr != nil {
-		return aiErr
+	// plugin templates used by the plugin manager to scaffold new plugins
+	pluginTemplateErr := extractFiles(ctx, PluginTemplatesFS, util.GetLocation().GetPluginTemplatesDirectory(), "plugin_templates", true)
+	if pluginTemplateErr != nil {
+		return pluginTemplateErr
 	}
 
 	// themes

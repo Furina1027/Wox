@@ -251,24 +251,6 @@ func (u *uiImpl) GetActiveWindowSnapshot(ctx context.Context) common.ActiveWindo
 	return GetUIManager().GetActiveWindowSnapshot(ctx)
 }
 
-func (u *uiImpl) SendChatResponse(ctx context.Context, aiChatData common.AIChatData) {
-	u.applyView(ctx, "send chat response", func(view contract.View) error { return view.SendChatResponse(ctx, aiChatData) })
-}
-
-func (u *uiImpl) RemoveChat(ctx context.Context, chatID string) {
-	u.applyView(ctx, "remove chat", func(view contract.View) error { return view.RemoveChat(ctx, chatID) })
-}
-
-func (u *uiImpl) ReloadChatResources(ctx context.Context, resouceName string) {
-	u.applyView(ctx, "reload chat resources", func(view contract.View) error { return view.ReloadChatResources(ctx, resouceName) })
-}
-
-// SendAIQuestion pushes a question to the UI. The answer comes back via the
-// /ai/question/answer HTTP route, which resolves the pending ask_user channel.
-func (u *uiImpl) SendAIQuestion(ctx context.Context, questionId string, question string, options []common.AIQuestionOption) {
-	u.applyView(ctx, "send AI question", func(view contract.View) error { return view.SendAIQuestion(ctx, questionId, question, options) })
-}
-
 func (u *uiImpl) ReloadSettingPlugins(ctx context.Context) {
 	u.applyView(ctx, "reload setting plugins", func(view contract.View) error { return view.ReloadSettingPlugins(ctx) })
 }

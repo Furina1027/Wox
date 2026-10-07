@@ -35,7 +35,7 @@ func TestGetPasteToActiveWindowActionRequiresWindowIdentity(t *testing.T) {
 	if strings.TrimSpace(action.Name) == "" {
 		t.Fatal("pid-only paste action has empty name")
 	}
-	fallback := i18n.GetI18nManager().TranslateWox(ctx, "plugin_ai_command_paste")
+	fallback := i18n.GetI18nManager().TranslateWox(ctx, "plugin_clipboard_primary_action_paste_to_active_app")
 	if action.Name != fallback && !strings.Contains(strings.ToLower(action.Name), "paste") {
 		t.Fatalf("pid-only action name %q is not a paste action", action.Name)
 	}

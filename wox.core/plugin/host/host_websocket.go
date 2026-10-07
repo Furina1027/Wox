@@ -999,63 +999,6 @@ func (w *WebsocketHost) handleRequestFromPlugin(ctx context.Context, request Jso
 		}
 
 		w.sendResponseToHost(ctx, request, "")
-	case "AIChatStream":
-		callbackId, exist := request.Params["callbackId"]
-		if !exist {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] AIChatStream method must have a callbackId parameter", request.PluginName))
-			return
-		}
-		conversationsStr, exist := request.Params["conversations"]
-		if !exist {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] AIChatStream method must have a conversations parameter", request.PluginName))
-			return
-		}
-		optionsStr, exist := request.Params["options"]
-		if !exist {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] AIChatStream method must have a options parameter", request.PluginName))
-			return
-		}
-
-		var model common.Model
-		modelStr, modelExist := request.Params["model"]
-		if !modelExist {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] AIChatStream method must have a model parameter", request.PluginName))
-			return
-		}
-		unmarshalErr := json.Unmarshal([]byte(modelStr), &model)
-		if unmarshalErr != nil {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] failed to unmarshal model: %s", request.PluginName, unmarshalErr))
-			return
-		}
-
-		var conversations []common.Conversation
-		unmarshalErr = json.Unmarshal([]byte(conversationsStr), &conversations)
-		if unmarshalErr != nil {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] failed to unmarshal conversations: %s", request.PluginName, unmarshalErr))
-			return
-		}
-
-		var options common.ChatOptions
-		unmarshalErr = json.Unmarshal([]byte(optionsStr), &options)
-		if unmarshalErr != nil {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] failed to unmarshal options: %s", request.PluginName, unmarshalErr))
-			return
-		}
-
-		llmErr := pluginInstance.API.AIChatStream(ctx, model, conversations, options, func(streamResult common.ChatStreamData) {
-			w.invokeMethod(ctx, pluginInstance.Metadata, "onLLMStream", map[string]string{
-				"CallbackId": callbackId,
-				"StreamType": string(streamResult.Status),
-				"Data":       streamResult.Data,
-				"Reasoning":  streamResult.Reasoning,
-				"ToolCalls":  "", // currently we don't stream toolcalls
-			})
-		})
-		if llmErr != nil {
-			util.GetLogger().Error(ctx, fmt.Sprintf("[%s] failed to start LLM stream: %s", request.PluginName, llmErr))
-		}
-
-		w.sendResponseToHost(ctx, request, "")
 	}
 }
 

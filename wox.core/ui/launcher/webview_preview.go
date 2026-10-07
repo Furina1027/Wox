@@ -234,7 +234,7 @@ func (a *App) resetWebView() {
 }
 
 func (a *App) isPreviewFullscreen() bool {
-	return a.chatFullscreen || a.webViewFullscreen || a.terminalFullscreen
+	return a.webViewFullscreen || a.terminalFullscreen
 }
 
 // onWebViewPreviewModeKey keeps result-list navigation from tearing down the

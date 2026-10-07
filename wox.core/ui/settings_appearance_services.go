@@ -3,8 +3,8 @@ package ui
 import (
 	"context"
 
-	"wox/i18n"
 	"wox/common"
+	"wox/i18n"
 	"wox/plugin"
 	"wox/setting"
 	"wox/ui/contract"

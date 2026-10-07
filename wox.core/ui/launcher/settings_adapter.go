@@ -32,8 +32,6 @@ func (a *App) buildSettings(frame woxui.FrameInfo) woxwidget.Widget {
 		page = a.buildPluginSettingsPage(snapshot, width-railWidth, pageHeight, frame.Scale)
 	} else if snapshot.tab == "theme" {
 		page = a.buildSettingsThemePage(snapshot, width-railWidth, pageHeight, frame.Scale)
-	} else if snapshot.tab == "ai" {
-		page = a.buildAISettingsPage(snapshot, width-railWidth, pageHeight, frame.Scale)
 	} else if snapshot.tab == "data" {
 		page = a.buildDataSettingsPage(snapshot, width-railWidth, pageHeight)
 	} else if snapshot.tab == "cloud" {
@@ -54,8 +52,8 @@ func (a *App) buildSettings(frame woxui.FrameInfo) woxwidget.Widget {
 	var overlayTop float32
 	if snapshot.tableEditor != nil {
 		overlay = a.buildFormTableOverlay(snapshot.tableEditor, snapshot.palette, width, height, frame.Scale)
-	} else if snapshot.ai.ModelManager != nil {
-		overlay = a.buildModelManagerOverlay(snapshot.ai.ModelManager, snapshot.palette, width, height, frame.Scale)
+	} else if snapshot.modelManager != nil {
+		overlay = a.buildModelManagerOverlay(snapshot.modelManager, snapshot.palette, width, height, frame.Scale)
 	} else if snapshot.general.ShowDisplayPicker != nil {
 		overlay = a.buildShowDisplayPickerOverlay(snapshot, width, height)
 	} else if snapshot.general.ChoicePicker != nil {

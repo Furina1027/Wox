@@ -168,6 +168,15 @@ func settingsRowsJSON(value any) string {
 	return string(encoded)
 }
 
+// settingsJSONArray normalizes an already encoded core list so table values can be shown as-is.
+func settingsJSONArray(value json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(value))
+	if trimmed == "" || trimmed == "null" {
+		return "[]"
+	}
+	return trimmed
+}
+
 func queryHotkeyPositionOptions() []formOption {
 	return []formOption{
 		{Label: "i18n:ui_query_position_system_default", Value: string(setting.QueryHotkeyPositionSystemDefault), Icon: fromCoreImage(icons.Get("position.system-default"))},

@@ -5,12 +5,9 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 
 from websockets.asyncio.server import ServerConnection
 from wox_plugin import (
-    AIModel,
     PushAttentionRequest,
     ChangeQueryParam,
-    ChatStreamCallback,
     Context,
-    Conversation,
     LogLevel,
     MetadataCommand,
     MRUData,
@@ -68,7 +65,6 @@ class PluginAPI(PublicAPI):
         self.enter_plugin_query_callbacks: Dict[str, Callable[[Context], Awaitable[None] | None]] = {}
         self.leave_plugin_query_callbacks: Dict[str, Callable[[Context], Awaitable[None] | None]] = {}
         self.drag_out_callbacks: Dict[str, Callable[[Context, DragOutEvent], Awaitable[None] | None]] = {}
-        self.llm_stream_callbacks: Dict[str, ChatStreamCallback] = {}
         self.mru_restore_callbacks: Dict[str, Callable[[Context, MRUData], Optional[Result] | Awaitable[Optional[Result]]]] = {}
         self.plugin_tool_callbacks: Dict[str, PluginToolHandler] = {}
         self.plugin_tool_callback_ids: Dict[str, str] = {}
@@ -331,25 +327,6 @@ class PluginAPI(PublicAPI):
         self.plugin_tools_stopping = True
         if self.plugin_tool_calls:
             await asyncio.gather(*tuple(self.plugin_tool_calls), return_exceptions=True)
-
-    async def ai_chat_stream(
-        self,
-        ctx: Context,
-        model: AIModel,
-        conversations: list[Conversation],
-        callback: ChatStreamCallback,
-    ) -> None:
-        """Chat using LLM"""
-        callback_id = str(uuid.uuid4())
-        self.llm_stream_callbacks[callback_id] = callback
-        await self.invoke_method(
-            ctx,
-            "LLMStream",
-            {
-                "callbackId": callback_id,
-                "conversations": json.dumps([conv.__dict__ for conv in conversations]),
-            },
-        )
 
     async def on_mru_restore(
         self,

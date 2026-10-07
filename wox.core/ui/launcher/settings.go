@@ -9,7 +9,6 @@ import (
 	"time"
 	woxcomponent "wox/ui/launcher/component"
 
-	"wox/common"
 	"wox/setting"
 	"wox/ui/contract"
 	woxui "wox/ui/runtime"
@@ -86,11 +85,6 @@ type settingsData struct {
 	EnableGlance                       bool
 	PrimaryGlance                      glanceRef
 	HideGlanceIcon                     bool
-	AIProviders                        json.RawMessage
-	AIMCPServers                       json.RawMessage
-	AISkills                           json.RawMessage
-	AIDisabledBuiltinTools             []string
-	AIConfigurableBuiltinTools         []aiBuiltinToolInfo
 	CloudSyncDisabledPlugins           []string
 	ShowScoreTail                      bool
 	ShowPerformanceTail                bool
@@ -117,11 +111,6 @@ type queryAliasSetting struct {
 	Alias    string `json:"Shortcut"`
 	Query    string
 	Disabled bool
-}
-
-type aiBuiltinToolInfo struct {
-	Name        string
-	Description string
 }
 
 type settingChoice struct {
@@ -159,16 +148,17 @@ type settingsSnapshot struct {
 	hotkey      hotkeySettingsSnapshot
 	appearance  appearanceSettingsSnapshot
 	theme       themeSettingsSnapshot
-	ai          aiSettingsSnapshot
 	tableEditor *formTableEditorSnapshot
-	usage       usageSettingsSnapshot
-	about       aboutSettingsSnapshot
-	privacy     privacySettingsSnapshot
-	dataState   dataSettingsSnapshot
-	network     networkSettingsSnapshot
-	runtime     runtimeSettingsSnapshot
-	cloud       cloudSettingsSnapshot
-	general     generalSettingsSnapshot
+	// modelManager is the local dictation/OCR model overlay shown above every settings page.
+	modelManager *modelManagerSnapshot
+	usage        usageSettingsSnapshot
+	about        aboutSettingsSnapshot
+	privacy      privacySettingsSnapshot
+	dataState    dataSettingsSnapshot
+	network      networkSettingsSnapshot
+	runtime      runtimeSettingsSnapshot
+	cloud        cloudSettingsSnapshot
+	general      generalSettingsSnapshot
 }
 
 type settingTab struct {
@@ -185,7 +175,6 @@ var baseSettingTabs = []settingTab{
 	{id: "runtime", label: "Runtime"},
 	{id: "theme", label: "Themes"},
 	{id: "plugins", label: "Plugins"},
-	{id: "ai", label: "AI"},
 	{id: "usage", label: "Usage"},
 	{id: "updates", label: "Updates"},
 	{id: "privacy", label: "Privacy"},
@@ -223,7 +212,6 @@ func settingNavSpecs(isDev bool) []settingNavSpec {
 		{id: "general", tab: "general", labelKey: "ui_general", fallback: "General", icon: "⚙"},
 		{id: "ui", tab: "appearance", labelKey: "ui_ui", fallback: "Interface", icon: "◉"},
 		{id: "hotkey", tab: "hotkey", labelKey: "ui_hotkeys", fallback: "Hotkey", icon: "⌘"},
-		{id: "ai", tab: "ai", labelKey: "ui_ai", fallback: "AI", icon: "◇"},
 		{id: "data", labelKey: "ui_data", fallback: "Data", icon: "□", parent: true},
 		{id: "data.backup", tab: "data", labelKey: "ui_data_backup_restore_nav", fallback: "Backup & Logs", icon: "☁", depth: 1},
 		{id: "data.cloudsync", tab: "cloud", labelKey: "ui_cloud_sync", fallback: "Cloud Sync", icon: "☁", depth: 1},
@@ -368,9 +356,6 @@ func (a *App) openSettings(windowContext settingWindowContext) error {
 		if form := a.generalSettings.Form(); form != nil {
 			form.active = tab == "general"
 		}
-		if form := a.aiSettings.Form(); form != nil {
-			form.active = tab == "ai"
-		}
 		if tab == "theme" {
 			a.themeSettings.SetThemesMode(themeMode)
 			a.themeSettings.SetThemes(nil)
@@ -391,7 +376,6 @@ func (a *App) openSettings(windowContext settingWindowContext) error {
 		a.generalSettings.EndEdit()
 		a.generalSettings.SetChoicePicker(nil)
 		a.deactivateTerminalPreview()
-		a.resetChatPreview()
 		a.clearWebViewPreviewModeLocked()
 	}); err != nil {
 		return err
@@ -416,9 +400,6 @@ func (a *App) openSettings(windowContext settingWindowContext) error {
 		util.Go(a.lifecycleCtx, "reload usage stats", func() {
 			a.reloadUsageStats(a.currentUsagePeriod())
 		})
-	}
-	if tab == "ai" {
-		util.Go(a.lifecycleCtx, "load AI provider catalog", a.loadAIProviderCatalog)
 	}
 	if tab == "appearance" {
 		util.Go(a.lifecycleCtx, "load glance catalog", a.loadGlanceCatalog)
@@ -533,14 +514,10 @@ func (a *App) reloadSettingsWithForms(forceForms bool) error {
 	densityChanged := false
 	if err := a.runOnUI("apply general settings snapshot", func() {
 		if forceForms || a.settingsOpen || a.onboardingOpen {
-			aiForm := newAISettingsForm(data)
 			hotkeyForm := newHotkeySettingsForm(data)
 			generalForm := newGeneralQuerySettingsForm(data)
-			applyAIProviderCatalogLocked(&aiForm, a.aiSettings.ProviderCatalog())
-			aiForm.active = a.settingsOpen && a.settingTab == "ai"
 			hotkeyForm.active = a.settingsOpen && a.settingTab == "hotkey"
 			generalForm.active = a.settingsOpen && a.settingTab == "general"
-			a.aiSettings.SetForm(&aiForm)
 			a.hotkeySettings.SetForm(&hotkeyForm)
 			a.generalSettings.SetForm(&generalForm)
 		}
@@ -573,12 +550,6 @@ func (a *App) reloadSettingsWithForms(forceForms bool) error {
 				applyErr = fmt.Errorf("apply Wox onboarding UI font: %w", err)
 			}
 		}
-		if window := a.chatNativeWindow(); window != nil {
-			if err := window.SetFontFamily(data.AppFontFamily); err != nil {
-				applyErr = fmt.Errorf("apply Wox chat UI font: %w", err)
-			}
-			_ = window.Invalidate()
-		}
 	}); err != nil {
 		return err
 	}
@@ -600,18 +571,6 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 	trayQueries, err := json.Marshal(loaded.TrayQueries)
 	if err != nil {
 		return settingsData{}, fmt.Errorf("encode tray queries: %w", err)
-	}
-	aiProviders, err := json.Marshal(loaded.AIProviders)
-	if err != nil {
-		return settingsData{}, fmt.Errorf("encode AI providers: %w", err)
-	}
-	mcpServers, err := json.Marshal(loaded.AIMCPServers)
-	if err != nil {
-		return settingsData{}, fmt.Errorf("encode AI MCP servers: %w", err)
-	}
-	aiSkills, err := json.Marshal(loaded.AISkills)
-	if err != nil {
-		return settingsData{}, fmt.Errorf("encode AI skills: %w", err)
 	}
 
 	queryHotkeys := make([]queryHotkeySetting, len(loaded.QueryHotkeys))
@@ -672,11 +631,6 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 		EnableGlance:                       loaded.EnableGlance,
 		PrimaryGlance:                      glanceRef{PluginID: loaded.PrimaryGlance.PluginId, GlanceID: loaded.PrimaryGlance.GlanceId},
 		HideGlanceIcon:                     loaded.HideGlanceIcon,
-		AIProviders:                        aiProviders,
-		AIMCPServers:                       mcpServers,
-		AISkills:                           aiSkills,
-		AIDisabledBuiltinTools:             append([]string(nil), loaded.AIDisabledBuiltinTools...),
-		AIConfigurableBuiltinTools:         aiBuiltinToolInfosFromContract(loaded.AIConfigurableBuiltinTools),
 		CloudSyncDisabledPlugins:           append([]string(nil), loaded.CloudSyncDisabledPlugins...),
 		ShowScoreTail:                      loaded.ShowScoreTail,
 		ShowPerformanceTail:                loaded.ShowPerformanceTail,
@@ -685,14 +639,6 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 		ShowPerformanceTailBackendPrepared: loaded.ShowPerformanceTailBackendPrepared,
 		ShowPerformanceTailUIReceived:      loaded.ShowPerformanceTailUIReceived,
 	}, nil
-}
-
-func aiBuiltinToolInfosFromContract(tools []common.AIConfigurableBuiltinTool) []aiBuiltinToolInfo {
-	out := make([]aiBuiltinToolInfo, 0, len(tools))
-	for _, tool := range tools {
-		out = append(out, aiBuiltinToolInfo{Name: tool.Name, Description: tool.Description})
-	}
-	return out
 }
 
 func (a *App) closeSettings() error {
@@ -760,9 +706,6 @@ func (a *App) onSettingsKey(event woxui.KeyEvent) bool {
 	if themeTab && a.onThemeEditorPreviewKey(event) {
 		return true
 	}
-	if a.onAISettingsKey(event) {
-		return true
-	}
 	if a.onBuiltInSettingsEditorKey(event) {
 		return true
 	}
@@ -790,7 +733,6 @@ func (a *App) settingsSnapshot() settingsSnapshot {
 	hotkey := a.hotkeySettings.Snapshot()
 	appearance := a.appearanceSettings.Snapshot()
 	theme := a.themeSettings.Snapshot()
-	ai := a.aiSettings.Snapshot()
 	usage := a.usageSettings.Snapshot()
 	about := a.aboutSettings.Snapshot()
 	privacy := a.privacySettings.Snapshot()
@@ -807,38 +749,37 @@ func (a *App) settingsSnapshot() settingsSnapshot {
 
 	// Resolve controller-owned form pointers in the same UI-thread snapshot transaction.
 	pluginForm := a.pluginSettings.Form()
-	aiForm := a.aiSettings.Form()
 	hotkeyForm := a.hotkeySettings.Form()
 	generalForm := a.generalQuerySettingsForm()
 
 	var tableEditor *formTableEditorSnapshot
-	if a.settingsTableEditor != nil && a.formTableTargetCurrentWithFormsLocked(a.settingsTableEditor.target, pluginForm, aiForm, hotkeyForm, generalForm) {
+	if a.settingsTableEditor != nil && a.formTableTargetCurrentWithFormsLocked(a.settingsTableEditor.target, pluginForm, hotkeyForm, generalForm) {
 		tableEditor = snapshotFormTableEditorLocked(a.settingsTableEditor)
 	}
 	return settingsSnapshot{
-		isDev:       a.isDev,
-		tab:         a.settingTab,
-		row:         a.settingRow,
-		saving:      a.settingSaving,
-		highlight:   a.settingFlash,
-		tooltip:     tooltip,
-		search:      search,
-		update:      update,
-		palette:     settingsPalette(),
-		plugins:     plugins,
-		hotkey:      hotkey,
-		appearance:  appearance,
-		theme:       theme,
-		ai:          ai,
-		tableEditor: tableEditor,
-		usage:       usage,
-		about:       about,
-		privacy:     privacy,
-		dataState:   dataState,
-		network:     network,
-		runtime:     runtime,
-		cloud:       cloud,
-		general:     general,
+		isDev:        a.isDev,
+		tab:          a.settingTab,
+		row:          a.settingRow,
+		saving:       a.settingSaving,
+		highlight:    a.settingFlash,
+		tooltip:      tooltip,
+		search:       search,
+		update:       update,
+		palette:      settingsPalette(),
+		plugins:      plugins,
+		hotkey:       hotkey,
+		appearance:   appearance,
+		theme:        theme,
+		tableEditor:  tableEditor,
+		modelManager: snapshotModelManagerLocked(a.modelManager),
+		usage:        usage,
+		about:        about,
+		privacy:      privacy,
+		dataState:    dataState,
+		network:      network,
+		runtime:      runtime,
+		cloud:        cloud,
+		general:      general,
 	}
 }
 
@@ -853,7 +794,6 @@ func (a *App) selectSettingTab(tab string) {
 	loadThemes := false
 	loadUsage := false
 	loadAbout := false
-	loadAIProviders := false
 	loadGlanceCatalog := false
 	loadSystemFonts := false
 	loadData := false
@@ -902,12 +842,6 @@ func (a *App) selectSettingTab(tab string) {
 			a.themeSettings.SetAutoEditor(nil)
 		}
 	}
-	if form := a.aiSettings.Form(); form != nil {
-		form.active = tab == "ai"
-		if tab == "ai" {
-			setFormFieldsFocusLocked(form, 0)
-		}
-	}
 	if hotkeyForm := a.hotkeySettings.Form(); hotkeyForm != nil {
 		hotkeyForm.active = tab == "hotkey"
 		if tab == "hotkey" {
@@ -935,8 +869,6 @@ func (a *App) selectSettingTab(tab string) {
 	loadUsage = tab == "usage" && !usageSnap.Loaded && !usageSnap.Loading
 	aboutSnap := a.aboutSettings.Snapshot()
 	loadAbout = (tab == "about" || tab == "privacy") && !aboutSnap.Loaded && !aboutSnap.Loading
-	aiSnap := a.aiSettings.Snapshot()
-	loadAIProviders = tab == "ai" && !aiSnap.ProvidersLoaded && !aiSnap.ProvidersLoading
 	appearanceSnap := a.appearanceSettings.Snapshot()
 	loadGlanceCatalog = tab == "appearance" && !appearanceSnap.GlanceCatalogLoaded && !appearanceSnap.GlanceCatalogLoading
 	loadSystemFonts = tab == "appearance" && !appearanceSnap.FontsLoaded && !appearanceSnap.FontsLoading
@@ -982,9 +914,6 @@ func (a *App) selectSettingTab(tab string) {
 	}
 	if loadAbout {
 		util.Go(a.lifecycleCtx, "reload about version", a.reloadAboutVersion)
-	}
-	if loadAIProviders {
-		util.Go(a.lifecycleCtx, "load AI provider catalog", a.loadAIProviderCatalog)
 	}
 	if loadGlanceCatalog {
 		util.Go(a.lifecycleCtx, "load glance catalog", a.loadGlanceCatalog)
@@ -1347,8 +1276,6 @@ func settingTabForPath(path string) string {
 		return "plugins"
 	case "/plugins/store", "plugins.store":
 		return "plugins"
-	case "/ai", "ai":
-		return "ai"
 	case "/debug", "debug":
 		return "debug"
 	case "/update", "/updates":
@@ -1372,7 +1299,7 @@ func settingItemsForSnapshot(snapshot settingsSnapshot) []settingItem {
 			choices: []settingChoice{{"7d", "7 days"}, {"30d", "30 days"}, {"365d", "365 days"}, {"all", "All time"}},
 		}}
 	}
-	if snapshot.tab == "ai" || snapshot.tab == "data" || snapshot.tab == "cloud" || snapshot.tab == "plugins" || snapshot.tab == "theme" || snapshot.tab == "about" {
+	if snapshot.tab == "data" || snapshot.tab == "cloud" || snapshot.tab == "plugins" || snapshot.tab == "theme" || snapshot.tab == "about" {
 		return nil
 	}
 	items := settingItems(snapshot.tab, snapshot.general.Data)

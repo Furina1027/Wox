@@ -171,15 +171,15 @@ func trayQueryEditorTestApp(t *testing.T) *App {
 		settingTab:      "general",
 		generalSettings: general,
 		hotkeySettings:  newHotkeySettingsController(deps),
-		aiSettings:      newAISettingsController(deps),
-		pluginSettings:  newPluginSettingsController(deps),
-		settingsSearch:  newSettingsSearchController(deps),
-		themeSettings:   newThemeSettingsController(deps),
-		sharedEdit:      newSharedEditState(),
-		images:          map[string]*woxui.Image{},
-		imageRequested:  map[string]string{},
-		imageLastUsed:   map[string]uint64{},
-		imageErrors:     map[string]string{},
+
+		pluginSettings: newPluginSettingsController(deps),
+		settingsSearch: newSettingsSearchController(deps),
+		themeSettings:  newThemeSettingsController(deps),
+		sharedEdit:     newSharedEditState(),
+		images:         map[string]*woxui.Image{},
+		imageRequested: map[string]string{},
+		imageLastUsed:  map[string]uint64{},
+		imageErrors:    map[string]string{},
 	}
 	app.openTrayQueryEditor(0)
 	if app.settingsTableEditor == nil || app.settingsTableEditor.rowForm == nil {

@@ -337,11 +337,11 @@ func actionPanelUnfilteredIndices(entries []actionPanelEntry) []int {
 // filtered list, or a group divider appearing, cannot move the filter field.
 func actionPanelFloatingPlacement(left, windowHeight, queryHeight, toolbarHeight, panelWidth, panelHeight, bottomOffset float32) (launcherview.LauncherFloatingView, woxui.Rect) {
 	return launcherview.LauncherFloatingView{
-		Left: left, Bottom: toolbarHeight + bottomOffset, AnchorBottom: true,
-	}, woxui.Rect{
-		X: left, Y: max(queryHeight+launcherview.ActionPanelTopGap, windowHeight-toolbarHeight-panelHeight-bottomOffset),
-		Width: panelWidth, Height: panelHeight,
-	}
+			Left: left, Bottom: toolbarHeight + bottomOffset, AnchorBottom: true,
+		}, woxui.Rect{
+			X: left, Y: max(queryHeight+launcherview.ActionPanelTopGap, windowHeight-toolbarHeight-panelHeight-bottomOffset),
+			Width: panelWidth, Height: panelHeight,
+		}
 }
 
 // buildActionPanel resolves action labels and icons before delegating to the pure panel view.
@@ -847,11 +847,6 @@ func (a *App) activateAction(resultIndex, actionIndex int) {
 	}
 	result := a.results[resultIndex]
 	action := result.Actions[actionIndex]
-	if action.ID == enterChatModeActionID {
-		a.hideActionPanel()
-		a.enterChatMode()
-		return
-	}
 	if action.ID == openWebViewPreviewActionID {
 		a.hideActionPanel()
 		a.enterWebViewPreviewMode(resultIndex, action.ContextData)
@@ -887,9 +882,6 @@ func (a *App) activateAction(resultIndex, actionIndex int) {
 func (a *App) onQueryFocusChanged(focused bool) {
 	if !focused {
 		return
-	}
-	if state := a.chatPreview; state != nil {
-		state.active = false
 	}
 	formVisible := a.form != nil
 	if formVisible {

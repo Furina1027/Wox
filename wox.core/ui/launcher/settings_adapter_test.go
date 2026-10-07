@@ -82,35 +82,6 @@ func TestSettingsSearchSelectedBuiltInIconUsesSelectedTextColor(t *testing.T) {
 	}
 }
 
-func TestSettingNavPlacesHotkeyAboveAI(t *testing.T) {
-	var ids []string
-	for _, spec := range settingNavSpecs(false) {
-		ids = append(ids, spec.id)
-	}
-	hotkey := -1
-	ai := -1
-	for index, id := range ids {
-		if id == "hotkey" {
-			hotkey = index
-		}
-		if id == "ai" {
-			ai = index
-		}
-		if id == "network" {
-			t.Fatal("network should not remain in the settings sidebar after proxy moved to General")
-		}
-	}
-	if hotkey < 0 || ai < 0 || hotkey != ai-1 {
-		t.Fatalf("sidebar order = %v, want hotkey immediately above AI", ids)
-	}
-	if settingTabForPath("/hotkeys") != "hotkey" {
-		t.Fatalf("hotkeys path = %q, want hotkey", settingTabForPath("/hotkeys"))
-	}
-	if settingTabForPath("/network") != "general" {
-		t.Fatalf("legacy network path = %q, want general", settingTabForPath("/network"))
-	}
-}
-
 func TestGeneralSettingsEndWithProxy(t *testing.T) {
 	items := settingItems("general", settingsData{HttpProxyEnabled: true, HttpProxyURL: "http://localhost:7890"})
 	if len(items) < 2 {

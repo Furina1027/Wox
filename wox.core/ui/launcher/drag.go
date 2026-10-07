@@ -1,7 +1,9 @@
 package launcher
 
 import (
+	"context"
 	"fmt"
+	"strings"
 
 	"wox/plugin"
 	"wox/ui/launcher/view"
@@ -16,33 +18,31 @@ type pendingResultFileDrag struct {
 	preventHide bool
 }
 
-// handleFileDrop delivers launcher drops to the visible chat composer or a selection query.
+// cleanFileDropPaths drops blank entries so an empty drop is a no-op.
+func cleanFileDropPaths(paths []string) []string {
+	cleaned := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if path = strings.TrimSpace(path); path != "" {
+			cleaned = append(cleaned, path)
+		}
+	}
+	return cleaned
+}
+
+// handleFileDrop turns a launcher drop into a selection query.
 func (a *App) handleFileDrop(paths []string) {
 	cleaned := cleanFileDropPaths(paths)
 	if len(cleaned) == 0 {
 		return
 	}
-	if a.launcherPresentsChatInput() {
-		a.enqueueChatDraftAttachments(cleaned, nil, false)
-		return
-	}
 	a.handleLauncherSelectionFileDrop(cleaned)
-}
-
-// handleChatWindowFileDrop appends files to the dedicated chat draft only.
-func (a *App) handleChatWindowFileDrop(paths []string) {
-	cleaned := cleanFileDropPaths(paths)
-	if len(cleaned) == 0 {
-		return
-	}
-	a.enqueueChatDraftAttachments(cleaned, nil, true)
 }
 
 func (a *App) handleLauncherSelectionFileDrop(paths []string) {
 	current := toCorePlainQuery(a.query)
 	next := plugin.NewGlobalFileDropQuery(paths)
 	if manager := plugin.GetPluginManager(); manager != nil {
-		next = manager.BuildFileDropQuery(a.chatImportLifecycleCtx(), current, paths)
+		next = manager.BuildFileDropQuery(a.lifecycleCtx, current, paths)
 	}
 	if a.window != nil {
 		_, _ = a.window.Show()
@@ -53,7 +53,7 @@ func (a *App) handleLauncherSelectionFileDrop(paths []string) {
 	a.canRecallHistory = false
 	a.setQuery(fromCorePlainQuery(next))
 	if err := a.sendCurrentQuery(); err != nil {
-		util.GetLogger().Warn(a.chatImportLifecycleCtx(), fmt.Sprintf("send query after file drop: %v", err))
+		util.GetLogger().Warn(a.lifecycleCtx, fmt.Sprintf("send query after file drop: %v", err))
 	}
 	// A targeted drop is one selection query. Restore input afterwards so later
 	// keystrokes keep the typed text instead of staying pinned to those files.
@@ -76,16 +76,16 @@ func (a *App) startResultDrag(index int) {
 		preventHide: result.DragData.PreventHideAfterDrag,
 	}
 	if a.services != nil {
-		pending.notify = a.services.PrepareResultDrag(a.chatImportLifecycleCtx(), a.sessionID, result.QueryID, result.ID)
+		pending.notify = a.services.PrepareResultDrag(a.lifecycleCtx, a.sessionID, result.QueryID, result.ID)
 	}
 	a.beginResultFileDrag()
-	util.GetLogger().Info(a.chatImportLifecycleCtx(), fmt.Sprintf(
+	util.GetLogger().Info(a.lifecycleCtx, fmt.Sprintf(
 		"result file drag start result=%s preventHide=%v files=%d",
 		pending.resultID, pending.preventHide, len(files),
 	))
 	status, err := a.window.StartFileDrag(files)
 	if err != nil {
-		util.GetLogger().Warn(a.chatImportLifecycleCtx(), fmt.Sprintf("result file drag failed: %v", err))
+		util.GetLogger().Warn(a.lifecycleCtx, fmt.Sprintf("result file drag failed: %v", err))
 		a.endResultFileDrag()
 		return
 	}
@@ -104,6 +104,9 @@ func (a *App) handleResultDragEnded(status woxui.FileDragStatus) {
 }
 
 func (a *App) finishResultFileDrag(status woxui.FileDragStatus, pending pendingResultFileDrag) {
+	if a.lifecycleCtx == nil {
+		a.lifecycleCtx = context.Background()
+	}
 	// Notify after the OS drag has already finished. OnDragOut cannot block it.
 	if endedStatus, ok := dragOutStatus(status); ok {
 		if pending.notify != nil {
@@ -114,14 +117,14 @@ func (a *App) finishResultFileDrag(status woxui.FileDragStatus, pending pendingR
 		return
 	}
 	shouldHide := hideLauncherAfterResultDrag(status, pending.preventHide)
-	util.GetLogger().Info(a.chatImportLifecycleCtx(), fmt.Sprintf(
+	util.GetLogger().Info(a.lifecycleCtx, fmt.Sprintf(
 		"result file drag end result=%s status=%v preventHide=%v hide=%v",
 		pending.resultID, status, pending.preventHide, shouldHide,
 	))
 	if shouldHide {
 		a.endResultFileDrag()
 		if err := a.hideWindow(true); err != nil {
-			util.GetLogger().Warn(a.chatImportLifecycleCtx(), fmt.Sprintf("hide launcher after result file drag: %v", err))
+			util.GetLogger().Warn(a.lifecycleCtx, fmt.Sprintf("hide launcher after result file drag: %v", err))
 		}
 		return
 	}

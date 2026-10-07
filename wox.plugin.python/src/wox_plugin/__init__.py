@@ -59,7 +59,6 @@ Methods for interacting with Wox:
 - **Logging**: `log()`
 - **i18n**: `get_translation()`
 - **Results**: `get_updatable_result()`, `update_result()`
-- **AI**: `ai_chat_stream()`
 - **MRU**: `on_mru_restore()`
 - **Callbacks**: `on_unload()`, `on_deep_link()`
 - **Commands**: `register_query_commands()`
@@ -114,12 +113,6 @@ Methods for interacting with Wox:
 - `PluginSettingValueTable`, `PluginSettingValueTableColumn`, `PluginSettingValueTableGroup`: editable tables with optional collapsed row-editor groups
 - Helper functions: `create_textbox_setting()`, `create_checkbox_setting()`, `create_label_setting()`
 
-#### AI Models (`models/ai.py`)
-- `AIModel`: AI model definition (provider and name)
-- `Conversation`: Chat message with role and content
-- `ConversationRole`: USER or AI
-- `ChatStreamData`: Streaming response data
-- `ChatStreamDataType`: STREAMING, FINISHED, ERROR
 
 #### Other Models
 - `Context` (`models/context.py`): Request-scoped context with trace ID
@@ -225,7 +218,6 @@ settings = [
 from typing import List
 
 from .api import (
-    ChatStreamCallback,
     PublicAPI,
     GetThemeColorsOption,
     GetThemeColorsResult,
@@ -233,14 +225,6 @@ from .api import (
     ScreenshotResult,
     SetSettingOption,
     SetSettingResult,
-)
-from .models.ai import (
-    AIModel,
-    ChatStreamData,
-    ChatStreamDataType,
-    Conversation,
-    ConversationRole,
-    ToolCallInfo,
 )
 from .models.attention import AttentionAction, AttentionActionType, PushAttentionRequest
 from .models.context import Context
@@ -340,7 +324,6 @@ __all__: List[str] = [
     "QueryReturn",
     # API
     "PublicAPI",
-    "ChatStreamCallback",
     "ScreenshotOption",
     "ScreenshotResult",
     "GetThemeColorsOption",
@@ -407,15 +390,6 @@ __all__: List[str] = [
     "PluginQueryRequirement",
     "PluginQueryRequirements",
     "PluginSettingValueStyle",
-    # AI
-    "AIModel",
-    "ChatStreamData",
-    "Conversation",
-    "ConversationRole",
-    "ChatStreamDataType",
-    "ToolCallInfo",
-    "user_message",
-    "assistant_message",
     # Query
     "ChangeQueryParam",
     "RefreshQueryParam",
@@ -462,44 +436,6 @@ __all__: List[str] = [
     "create_checkbox_setting",
     "create_label_setting",
 ]
-
-
-# Convenience functions for creating AI conversation messages
-def user_message(text: str, images: List[bytes] | None = None) -> Conversation:
-    """
-    Create a user message for AI conversations.
-
-    Convenience function to create a Conversation with role=USER.
-
-    Args:
-        text: The user's message text
-        images: Optional list of PNG image bytes for vision models
-
-    Returns:
-        A new Conversation instance with role=USER
-
-    Example:
-        msg = user_message("What's in this image?", images=[png_data])
-    """
-    return Conversation.new_user_message(text, images)
-
-
-def assistant_message(text: str) -> Conversation:
-    """
-    Create an AI message for AI conversations.
-
-    Convenience function to create an assistant message.
-
-    Args:
-        text: The assistant's response text
-
-    Returns:
-        A new Conversation instance with role=ASSISTANT
-
-    Example:
-        msg = assistant_message("The image shows a cat sitting on a windowsill.")
-    """
-    return Conversation.new_assistant_message(text)
 
 
 # Exception classes (stubs for documentation purposes)

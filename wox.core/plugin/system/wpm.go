@@ -20,7 +20,6 @@ import (
 	"wox/setting/definition"
 	"wox/setting/validator"
 	"wox/util"
-	"wox/util/clipboard"
 	"wox/util/shell"
 	"wox/util/trash"
 
@@ -588,27 +587,7 @@ func (w *WPMPlugin) createCommand(ctx context.Context, query plugin.Query) []plu
 		}
 	}
 
-	prompt := fmt.Sprintf(i18n.GetI18nManager().TranslateWox(ctx, "plugin_wpm_ai_prompt"), "Wox.Plugin."+strings.TrimPrefix(pluginName, "Wox.Plugin."))
-	results := []plugin.QueryResult{{
-		Id:       uuid.NewString(),
-		Title:    "i18n:plugin_wpm_create_with_ai",
-		SubTitle: "i18n:plugin_wpm_create_with_ai_description",
-		Icon:     wpmIcon,
-		Tails:    []plugin.QueryResultTail{plugin.NewQueryResultTailText("i18n:plugin_wpm_create_with_ai_recommended")},
-		Actions: []plugin.QueryResultAction{{
-			Name:      "i18n:plugin_wpm_copy_ai_prompt",
-			Icon:      icons.Get(icons.ActionCopy),
-			IsDefault: true,
-			Action: func(ctx context.Context, actionContext plugin.ActionContext) {
-				if err := clipboard.WriteText(prompt); err != nil {
-					util.GetLogger().Error(ctx, fmt.Sprintf("Failed to copy plugin creation prompt: %s", err))
-					w.api.Notify(ctx, "i18n:plugin_wpm_copy_ai_prompt_failed")
-					return
-				}
-				w.api.Notify(ctx, "i18n:plugin_wpm_ai_prompt_copied")
-			},
-		}},
-	}}
+	var results []plugin.QueryResult
 
 	// Add regular plugin templates with group
 	for _, template := range pluginTemplates {

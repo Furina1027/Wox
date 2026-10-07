@@ -180,8 +180,6 @@ func (m *Manager) getEffectiveQueryRequirementValidators(requirement MetadataQue
 		fromSetting = v.Validators
 	case *definition.PluginSettingValueSelect:
 		fromSetting = v.Validators
-	case *definition.PluginSettingValueSelectAIModel:
-		fromSetting = v.Validators
 	}
 	return fromSetting
 }
@@ -197,10 +195,6 @@ func (m *Manager) withEffectiveRequirementValidators(item definition.PluginSetti
 		copy.Validators = validators
 		item.Value = &copy
 	case *definition.PluginSettingValueSelect:
-		copy := *v
-		copy.Validators = validators
-		item.Value = &copy
-	case *definition.PluginSettingValueSelectAIModel:
 		copy := *v
 		copy.Validators = validators
 		item.Value = &copy

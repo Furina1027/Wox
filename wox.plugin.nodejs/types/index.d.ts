@@ -1,8 +1,6 @@
 import { MetadataCommand, PluginSettingDefinitionItem } from "./setting.js"
-import { AI } from "./ai.js"
 
 export * from "./setting.js"
-export * from "./ai.js"
 
 export interface RegisterTriggerKeywordOption {
   Keyword: string
@@ -1681,11 +1679,6 @@ export interface PublicAPI {
    * Invoke another plugin's registered tool. Requires Wox >= 2.4.5.
    */
   InvokePluginTool: (ctx: Context, option: InvokePluginToolOption) => Promise<InvokePluginToolResult>
-
-  /**
-   * Chat using LLM
-   */
-  LLMStream: (ctx: Context, conversations: AI.Conversation[], callback: AI.ChatStreamFunc) => Promise<void>
 
   /**
    * Register MRU restore callback

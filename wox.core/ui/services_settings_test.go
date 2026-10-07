@@ -124,7 +124,4 @@ func TestCoreServicesValidatesRuntimeInteractionInput(t *testing.T) {
 	if _, err := service.ResultPreview(context.Background(), "session", "", "", ""); err == nil || !strings.Contains(err.Error(), "sessionId, queryId and id") {
 		t.Fatalf("ResultPreview error = %v, want preview identity validation error", err)
 	}
-	if err := service.AnswerAIQuestion(context.Background(), "session", "", "answer"); err == nil || !strings.Contains(err.Error(), "questionId is required") {
-		t.Fatalf("AnswerAIQuestion error = %v, want question validation error", err)
-	}
 }

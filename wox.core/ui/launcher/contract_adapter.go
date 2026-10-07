@@ -2,12 +2,10 @@ package launcher
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	woxcomponent "wox/ui/launcher/component"
 
-	"wox/ai"
 	"wox/cloudsync"
 	"wox/common"
 	"wox/plugin"
@@ -289,50 +287,8 @@ func (a *App) UpdateAttentionUnreadCount(_ context.Context, unreadCount int) err
 	})
 }
 
-// SendChatResponse reconciles a core chat snapshot with the active preview.
-func (a *App) SendChatResponse(_ context.Context, chat common.AIChatData) error {
-	converted := fromCoreChatData(chat)
-	return a.runOnUI("apply chat response", func() {
-		a.applyChatResponse(converted)
-	})
-}
-
-// RemoveChat drops a chat deleted outside this UI, for example by Cloud Sync from another device.
-func (a *App) RemoveChat(_ context.Context, chatID string) error {
-	return a.runOnUI("remove chat", func() {
-		a.applyDeletedChat(chatID)
-	})
-}
-
-// ReloadChatResources invalidates the requested AI catalogs.
-func (a *App) ReloadChatResources(_ context.Context, resourceName string) error {
-	return a.runOnUI("reload chat resources", func() {
-		a.reloadChatResourceName(resourceName)
-	})
-}
-
-// SendAIQuestion opens the typed ask-user overlay for the active chat preview.
-func (a *App) SendAIQuestion(_ context.Context, questionID string, question string, options []common.AIQuestionOption) error {
-	converted := make([]aiQuestionOption, len(options))
-	for index, option := range options {
-		converted[index] = aiQuestionOption{Value: option.Value, Title: option.Title, SubTitle: option.SubTitle, Recommended: option.Recommended, Extra: cloneStringMap(option.Extra)}
-	}
-	var applyErr error
-	if err := a.runOnUI("apply AI question", func() {
-		applyErr = a.applyTypedAIQuestion(aiQuestion{QuestionID: questionID, Question: question, Options: converted})
-	}); err != nil {
-		return err
-	}
-	return applyErr
-}
-
 // ReloadSettingPlugins refreshes plugin-backed settings and glance catalogs.
 func (a *App) ReloadSettingPlugins(_ context.Context) error {
-	if err := a.runOnUI("invalidate chat plugin mentions", func() {
-		a.reloadChatResourceName("mentions")
-	}); err != nil {
-		return err
-	}
 	util.Go(a.lifecycleCtx, "reload settings plugins", a.reloadGlanceCatalogFromCore)
 	a.publishSettingsChanged("plugins")
 	return nil
@@ -695,65 +651,6 @@ func imageFromString(value string) woxImage {
 	}
 	return woxImage{ImageType: imageType, ImageData: imageData}
 }
-
-func fromCoreChatData(chat common.AIChatData) chatData {
-	conversations := make([]chatConversation, len(chat.Conversations))
-	for index, conversation := range chat.Conversations {
-		images := make([]woxImage, len(conversation.Images))
-		for imageIndex := range conversation.Images {
-			images[imageIndex] = fromCoreImage(conversation.Images[imageIndex])
-		}
-		skillRefs := make([]chatSkillRef, len(conversation.SkillRefs))
-		for skillIndex, skill := range conversation.SkillRefs {
-			skillRefs[skillIndex] = chatSkillRef{ID: skill.Id, Name: skill.Name, Path: skill.Path, Source: skill.Source}
-		}
-		mentions := make([]chatMentionRef, len(conversation.Mentions))
-		for mentionIndex, mention := range conversation.Mentions {
-			mentions[mentionIndex] = chatMentionRef{Kind: string(mention.Kind), ID: mention.Id, Name: mention.Name}
-		}
-		conversations[index] = chatConversation{
-			ID: conversation.Id, Role: string(conversation.Role), Text: conversation.Text, Reasoning: conversation.Reasoning,
-			Images: images, SkillRefs: skillRefs, Mentions: mentions, Attachments: append([]common.AIChatAttachment(nil), conversation.Attachments...),
-			ToolCallInfo: chatToolCallFromContract(conversation.ToolCallInfo),
-			Timestamp:    conversation.Timestamp,
-		}
-	}
-	compactions := make([]json.RawMessage, len(chat.CompactionEntries))
-	for index := range chat.CompactionEntries {
-		compactions[index], _ = json.Marshal(chat.CompactionEntries[index])
-	}
-	var debugTrace json.RawMessage
-	if chat.DebugTrace != nil {
-		snapshot := chat.DebugTrace.Snapshot()
-		debugTrace, _ = json.Marshal(snapshot)
-	}
-	return chatData{
-		ID: chat.Id, Title: chat.Title, Conversations: conversations, CompactionEntries: compactions,
-		Model: aiModel{Name: chat.Model.Name, Provider: string(chat.Model.Provider), ProviderAlias: chat.Model.ProviderAlias}, DebugTrace: debugTrace,
-		CreatedAt: chat.CreatedAt, UpdatedAt: chat.UpdatedAt, IsStreaming: chat.IsStreaming, IsSummary: chat.IsSummary,
-	}
-}
-
-// chatToolCallFromContract copies persisted tool metadata and fills origin from
-// the live registry when older chats predate Source/Server fields.
-func chatToolCallFromContract(info common.ToolCallInfo) chatToolCallInfo {
-	source := string(info.Source)
-	server := info.Server
-	if source == "" && strings.TrimSpace(info.Name) != "" {
-		if tool, ok := ai.GetToolRegistry().Get(info.Name); ok {
-			source = string(tool.Source)
-			if tool.ServerConfig != nil {
-				server = tool.ServerConfig.Name
-			}
-		}
-	}
-	return chatToolCallInfo{
-		ID: info.Id, Name: info.Name, Source: source, Server: server, Arguments: cloneAnyMap(info.Arguments),
-		Status: string(info.Status), Delta: info.Delta, Response: info.Response,
-		StartTimestamp: info.StartTimestamp, EndTimestamp: info.EndTimestamp,
-	}
-}
-
 func cloneAnyMap(values map[string]any) map[string]any {
 	if values == nil {
 		return nil

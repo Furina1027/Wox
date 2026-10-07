@@ -3,8 +3,6 @@ package system
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 	"testing"
 	"wox/common"
@@ -16,28 +14,6 @@ import (
 type wpmCommandTestAPI struct {
 	plugin.API
 	query common.PlainQuery
-}
-
-// TestWPMCreateAIPrompt checks that every locale keeps the portable agent instructions intact.
-func TestWPMCreateAIPrompt(t *testing.T) {
-	for _, locale := range []string{"en_US", "zh_CN", "ja_JP", "ko_KR", "pt_BR", "ru_RU"} {
-		t.Run(locale, func(t *testing.T) {
-			data, err := os.ReadFile("../../resource/lang/" + locale + ".json")
-			require.NoError(t, err)
-			var translations map[string]string
-			require.NoError(t, json.Unmarshal(data, &translations))
-			for _, key := range []string{"create_with_ai", "create_with_ai_description", "create_with_ai_recommended", "copy_ai_prompt", "ai_prompt_copied", "copy_ai_prompt_failed"} {
-				require.NotEmpty(t, translations["plugin_wpm_"+key])
-			}
-			format := translations["plugin_wpm_ai_prompt"]
-			require.Equal(t, 1, strings.Count(format, "%s"))
-			prompt := fmt.Sprintf(format, "My Plugin")
-			for _, text := range []string{"My Plugin", "single-file SDK", "SKILL.md", "https://github.com/Wox-launcher/Wox/tree/master/.agents/skills/wox-plugin-creator", "https://github.com/Wox-launcher/Wox/tree/master/.agents/skills/wox-plugin-submit2store"} {
-				require.Contains(t, prompt, text)
-			}
-			require.NotContains(t, prompt, "%!")
-		})
-	}
 }
 
 // TestPluginTemplates verifies both runtimes and legacy/current manifest placeholders.
@@ -115,9 +91,7 @@ func TestWPMCommandDiscovery(t *testing.T) {
 	require.Equal(t, "i18n:plugin_wpm_enter_plugin_name", response.Results[0].Title)
 
 	createResults := w.createCommand(ctx, plugin.Query{TriggerKeyword: "wpm", Search: "demo"})
-	require.Len(t, createResults, 5)
-	require.Equal(t, "i18n:plugin_wpm_create_with_ai", createResults[0].Title)
-	require.Equal(t, []plugin.QueryResultTail{plugin.NewQueryResultTailText("i18n:plugin_wpm_create_with_ai_recommended")}, createResults[0].Tails)
+	require.Len(t, createResults, 4)
 	for _, result := range createResults {
 		require.NotContains(t, result.Title, "script_template")
 		require.NotContains(t, result.Group, "group_script_plugins")

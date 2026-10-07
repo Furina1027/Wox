@@ -73,10 +73,6 @@ type View interface {
 	ShowNotificationMessage(ctx context.Context, message common.NotifyMsg) error
 	ClearToolbarMessage(ctx context.Context, toolbarMessageID string) error
 	UpdateAttentionUnreadCount(ctx context.Context, unreadCount int) error
-	SendChatResponse(ctx context.Context, chat common.AIChatData) error
-	RemoveChat(ctx context.Context, chatID string) error
-	ReloadChatResources(ctx context.Context, resourceName string) error
-	SendAIQuestion(ctx context.Context, questionID string, question string, options []common.AIQuestionOption) error
 	ReloadSettingPlugins(ctx context.Context) error
 	ReloadSetting(ctx context.Context) error
 	ReloadSettingThemes(ctx context.Context) error

@@ -175,7 +175,6 @@ func (a *App) applyQueryTextChangeLocked(text string) {
 	// Preserve the visible global accessory until the backend classifies the new query.
 	a.stopGlanceLocked(false)
 	a.clearActionPanelStateLocked()
-	a.chatFullscreen = false
 	a.clearWebViewPreviewModeLocked()
 }
 
@@ -412,7 +411,6 @@ func (a *App) updateRefinementSelection(refinement *queryRefinement, selected []
 	a.beginQueryTransitionLocked(preservePluginLayout)
 	a.stopGlanceLocked(true)
 	a.clearActionPanelStateLocked()
-	a.chatFullscreen = false
 	a.clearWebViewPreviewModeLocked()
 	a.reconcileSelectedPreview()
 	if err := a.sendCurrentQuery(); err != nil {

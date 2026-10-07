@@ -44,8 +44,6 @@ type formTableEditorState struct {
 	queryVariable     *formTableQueryVariablePickerState
 	favicon           *formTableFaviconState
 	emojiPicker       *formTableEmojiPickerState
-	skillAdd          *formTableSkillAddState
-	mcpJSONImport     *formTableMCPJSONImportState
 	queryPreset       queryHotkeyPreset
 	windowGroupEditor *windowGroupEditorState
 	patternPreview    *formTablePatternPreviewState
@@ -72,8 +70,6 @@ type formTableEditorSnapshot struct {
 	queryVariable     *formTableQueryVariablePickerSnapshot
 	favicon           *formTableFaviconState
 	emojiPicker       *formTableEmojiPickerSnapshot
-	skillAdd          *formTableSkillAddSnapshot
-	mcpJSONImport     *formTableMCPJSONImportSnapshot
 	queryPreset       queryHotkeyPreset
 	windowGroupEditor *windowGroupEditorSnapshot
 	patternPreview    *formTablePatternPreviewSnapshot
@@ -144,7 +140,6 @@ type queryHotkeyVariable struct {
 
 const (
 	formTableQueryVariableKindQueryHotkey = "queryHotkey"
-	formTableQueryVariableKindAICommand   = "aiCommand"
 	formTableQueryVariableKindDictation   = "dictation"
 	formTableQueryVariableKindWebSearch   = "webSearch"
 )
@@ -155,10 +150,6 @@ var queryHotkeyVariables = []queryHotkeyVariable{
 	{"{wox:active_browser_url}", "i18n:ui_query_variable_active_browser_url", "i18n:ui_query_variable_active_browser_url_tooltip", "external"},
 	{"{wox:file_explorer_path}", "i18n:ui_query_variable_file_explorer_path", "i18n:ui_query_variable_file_explorer_path_tooltip", "folder-open"},
 	{"{wox:clipboard_text}", "i18n:ui_query_variable_clipboard_text", "i18n:ui_query_variable_clipboard_text_tooltip", "copy"},
-}
-
-var aiCommandPromptVariables = []queryHotkeyVariable{
-	{"{wox:input_text}", "i18n:ui_query_variable_input_text", "i18n:ui_query_variable_input_text_tooltip", "edit"},
 }
 
 var dictationPromptVariables = []queryHotkeyVariable{
@@ -332,16 +323,6 @@ func snapshotFormTableEditorLocked(state *formTableEditorState) *formTableEditor
 	if picker := state.emojiPicker; picker != nil {
 		emojiPicker = &formTableEmojiPickerSnapshot{fieldIndex: picker.fieldIndex, initialEmoji: picker.initialEmoji}
 	}
-	var skillAdd *formTableSkillAddSnapshot
-	if state.skillAdd != nil {
-		fields := snapshotFormFieldsLocked(state.skillAdd.fields)
-		skillAdd = &formTableSkillAddSnapshot{tab: state.skillAdd.tab, fields: &fields, error: state.skillAdd.error, cloning: state.skillAdd.cloning}
-	}
-	var mcpJSONImport *formTableMCPJSONImportSnapshot
-	if state.mcpJSONImport != nil {
-		fields := snapshotFormFieldsLocked(state.mcpJSONImport.fields)
-		mcpJSONImport = &formTableMCPJSONImportSnapshot{fields: &fields, error: state.mcpJSONImport.error}
-	}
 	return &formTableEditorSnapshot{
 		definition:        state.definition,
 		rows:              cloneFormTableRows(state.rows),
@@ -359,8 +340,6 @@ func snapshotFormTableEditorLocked(state *formTableEditorState) *formTableEditor
 		queryVariable:     queryVariable,
 		favicon:           favicon,
 		emojiPicker:       emojiPicker,
-		skillAdd:          skillAdd,
-		mcpJSONImport:     mcpJSONImport,
 		queryPreset:       state.queryPreset,
 		windowGroupEditor: snapshotWindowGroupEditorLocked(state.windowGroupEditor),
 		patternPreview:    snapshotFormTablePatternPreviewLocked(state.patternPreview),
@@ -369,8 +348,7 @@ func snapshotFormTableEditorLocked(state *formTableEditorState) *formTableEditor
 }
 
 func (a *App) formTableTargetCurrentLocked(target *formFieldsState) bool {
-	pluginForm := a.pluginSettings.Form()
-	return a.formTableTargetCurrentWithFormsLocked(target, pluginForm, a.aiSettings.Form(), a.hotkeySettings.Form(), a.generalQuerySettingsForm())
+	return a.formTableTargetCurrentWithFormsLocked(target, a.pluginSettings.Form(), a.hotkeySettings.Form(), a.generalQuerySettingsForm())
 }
 
 // generalQuerySettingsForm returns the General query-tables form when that controller exists.
@@ -385,9 +363,6 @@ func (a *App) generalQuerySettingsForm() *formFieldsState {
 func (a *App) settingsOwnedTableTarget(target *formFieldsState) bool {
 	if target == nil {
 		return false
-	}
-	if a.aiSettings != nil && target == a.aiSettings.Form() {
-		return true
 	}
 	if a.hotkeySettings != nil && target == a.hotkeySettings.Form() {
 		return true
@@ -404,11 +379,10 @@ func (a *App) activeFormTableEditor() *formTableEditorState {
 }
 
 // formTableTargetCurrentWithFormsLocked compares one table target using controller pointers captured for the UI-thread snapshot.
-func (a *App) formTableTargetCurrentWithFormsLocked(target *formFieldsState, pluginForm *pluginSettingsFormState, aiForm *formFieldsState, hotkeyForm *formFieldsState, generalForm *formFieldsState) bool {
+func (a *App) formTableTargetCurrentWithFormsLocked(target *formFieldsState, pluginForm *pluginSettingsFormState, hotkeyForm *formFieldsState, generalForm *formFieldsState) bool {
 	return target != nil && ((a.form != nil && target == &a.form.formFieldsState) ||
 		(a.requirementForm != nil && target == &a.requirementForm.formFieldsState) ||
 		(pluginForm != nil && target == &pluginForm.formFieldsState) ||
-		(a.settingsOpen && a.settingTab == "ai" && target == aiForm) ||
 		(a.settingsOpen && a.settingTab == "hotkey" && target == hotkeyForm) ||
 		(a.settingsOpen && a.settingTab == "general" && target == generalForm))
 }
@@ -562,21 +536,13 @@ func formTableColumnValue(column formTableColumn, row map[string]any) string {
 			return strings.Join(list, "\n")
 		}
 	}
-	if column.Type == "selectAIModel" {
-		if text, ok := value.(string); ok {
-			return text
-		}
-		if encoded, err := json.Marshal(value); err == nil {
-			return string(encoded)
-		}
-	}
 	return fmt.Sprint(value)
 }
 
 func formTableColumnDefinition(column formTableColumn, row map[string]any) (formDefinition, bool) {
 	value := formDefinitionValue{Key: column.Key, Label: column.Label, Tooltip: column.Tooltip, Validators: column.Validators, ColumnType: column.Type, QueryVariableKind: column.QueryVariableKind, QueryTest: column.QueryTest, Group: column.Group}
 	switch column.Type {
-	case "text", "queryHotkeyQuery", "aiCommandPrompt", "dictationPrompt", "queryVariable":
+	case "text", "queryHotkeyQuery", "dictationPrompt", "queryVariable":
 		value.MaxLines = max(1, column.TextMaxLines)
 		return formDefinition{Type: "textbox", Value: value}, true
 	case "password":
@@ -594,8 +560,6 @@ func formTableColumnDefinition(column formTableColumn, row map[string]any) (form
 		value.Options = append([]formOption(nil), column.SelectOptions...)
 		value.Filterable = column.Filterable
 		return formDefinition{Type: "select", Value: value}, true
-	case "selectAIModel":
-		return formDefinition{Type: "selectAIModel", Value: value}, true
 	case "hotkey":
 		return formDefinition{Type: "hotkey", Value: value}, true
 	case "woxImage":
@@ -785,12 +749,8 @@ func (a *App) beginCloneFormTableRowDirect() {
 }
 
 func (a *App) beginFormTableRowEdit(index int, rowEditorOnly, cloneRow bool) {
-	requestModels := false
 	state := a.activeFormTableEditor()
 	if state == nil || state.invalid || state.saving || state.rowForm != nil || index >= len(state.rows) {
-		return
-	}
-	if index >= 0 && (state.definition.Value.Key == "AISkills" || formTableSkillRowReadOnly(state.definition, state.rows[index])) {
 		return
 	}
 	base := map[string]any{}
@@ -805,12 +765,6 @@ func (a *App) beginFormTableRowEdit(index int, rowEditorOnly, cloneRow bool) {
 	if state.definition.Value.Key == "QueryHotkeys" {
 		state.queryPreset = inferQueryHotkeyPreset(fields.values)
 	}
-	if a.aiSettings != nil {
-		if models := a.aiSettings.Models(); len(models) > 0 {
-			applyAIModelOptionsLocked(&fields, models)
-		}
-	}
-	state.rowForm = &fields
 	state.appPicker = nil
 	state.queryVariable = nil
 	state.rowIndex = index
@@ -823,18 +777,13 @@ func (a *App) beginFormTableRowEdit(index int, rowEditorOnly, cloneRow bool) {
 	clearFormTableRowValidationLocked(state)
 	state.deletePending = -1
 	state.deleteDirect = false
-	if a.aiSettings != nil {
-		applyAIProviderDefaultHostLocked(state, false, a.aiSettings.ProviderCatalog())
-		requestModels = hasFormDefinitionType(fields.definitions, "selectAIModel") && !a.aiSettings.ModelsLoaded() && !a.aiSettings.ModelsLoading()
-		if requestModels {
-			a.aiSettings.SetModelsLoading(true)
-		}
-	}
+	state.rowForm = &fields
+	state.appPicker = nil
+	state.queryVariable = nil
+	state.favicon = nil
+	state.emojiPicker = nil
 	textInput := fields.editor != nil
 	a.updateFormTableTextInput(textInput)
-	if requestModels {
-		util.Go(a.lifecycleCtx, "load AI models for form table", a.loadAIModels)
-	}
 	a.invalidateFormTableWindow()
 }
 
@@ -958,7 +907,7 @@ func formTableRowFromFields(definition formDefinition, fields *formFieldsState, 
 				}
 			}
 			row[column.Key] = items
-		case "text", "password", "dirPath", "queryHotkeyQuery", "aiCommandPrompt", "dictationPrompt", "queryVariable", "select", "selectAIModel", "hotkey":
+		case "text", "password", "dirPath", "queryHotkeyQuery", "dictationPrompt", "queryVariable", "select", "hotkey":
 			row[column.Key] = value
 		case "woxImage":
 			image, _ := parseFormTableWoxImage(value)
@@ -1152,12 +1101,6 @@ func (a *App) saveFormTableRowEdit() {
 		a.invalidateFormTableWindow()
 		return
 	}
-	if fieldErrors := validateAISettingsTableRow(state.definition, state.rowForm); len(fieldErrors) > 0 {
-		state.fieldErrors = fieldErrors
-		expandFormTableGroupsForErrors(state)
-		a.invalidateFormTableWindow()
-		return
-	}
 	if fieldErrors := a.validateWebSearchTableRow(state.definition, state.rowForm); len(fieldErrors) > 0 {
 		state.fieldErrors = fieldErrors
 		expandFormTableGroupsForErrors(state)
@@ -1211,7 +1154,7 @@ func (a *App) deleteFormTableRow() {
 // beginDeleteFormTableRowDirect removes the selected row after the inline two-click confirmation.
 func (a *App) beginDeleteFormTableRowDirect() {
 	state := a.activeFormTableEditor()
-	if state == nil || state.invalid || state.saving || state.rowForm != nil || state.selected < 0 || state.selected >= len(state.rows) || !a.formTableTargetCurrentLocked(state.target) || formTableSkillRowReadOnly(state.definition, state.rows[state.selected]) {
+	if state == nil || state.invalid || state.saving || state.rowForm != nil || state.selected < 0 || state.selected >= len(state.rows) || !a.formTableTargetCurrentLocked(state.target) {
 		return
 	}
 	if len(state.rows) <= state.definition.Value.MinimumRowCount {
@@ -1225,7 +1168,7 @@ func (a *App) beginDeleteFormTableRowDirect() {
 
 func (a *App) beginFormTableRowDelete(direct bool) {
 	state := a.activeFormTableEditor()
-	if state == nil || state.invalid || state.saving || state.rowForm != nil || state.selected < 0 || state.selected >= len(state.rows) || !a.formTableTargetCurrentLocked(state.target) || formTableSkillRowReadOnly(state.definition, state.rows[state.selected]) {
+	if state == nil || state.invalid || state.saving || state.rowForm != nil || state.selected < 0 || state.selected >= len(state.rows) || !a.formTableTargetCurrentLocked(state.target) {
 		return
 	}
 	if len(state.rows) <= state.definition.Value.MinimumRowCount {
@@ -1443,9 +1386,6 @@ func (a *App) changeFormTableRowChoice(index, delta int) {
 		changeFormFieldsChoiceLocked(state.rowForm, index, delta)
 		if index >= 0 && index < len(state.rowForm.definitions) {
 			key := state.rowForm.definitions[index].Value.Key
-			if key == "Name" {
-				applyAIProviderDefaultHostLocked(state, true, a.aiSettings.ProviderCatalog())
-			}
 			if formTableRowDependsOnField(state.definition, key) {
 				applyFormTableRowVisibleFieldsLocked(state)
 			}
@@ -1837,8 +1777,6 @@ func formTableQueryVariableKind(definition formDefinition) string {
 	switch definition.Value.Tooltip {
 	case "i18n:ui_query_hotkeys_query_tooltip":
 		return formTableQueryVariableKindQueryHotkey
-	case "i18n:plugin_ai_command_prompt_tooltip":
-		return formTableQueryVariableKindAICommand
 	case "i18n:plugin_dictation_action_prompt_tooltip":
 		return formTableQueryVariableKindDictation
 	case "i18n:plugin_websearch_title_tooltip", "i18n:plugin_websearch_urls_tooltip":
@@ -1852,8 +1790,6 @@ func formTableQueryVariableKindFromColumnType(columnType string) string {
 	switch columnType {
 	case "queryHotkeyQuery":
 		return formTableQueryVariableKindQueryHotkey
-	case "aiCommandPrompt":
-		return formTableQueryVariableKindAICommand
 	case "dictationPrompt":
 		return formTableQueryVariableKindDictation
 	}
@@ -1889,8 +1825,6 @@ func formTableQueryVariableKindForField(state *formTableEditorState, index int) 
 // formTableQueryVariables returns the placeholders offered by one variable-capable field kind.
 func formTableQueryVariables(kind string) []queryHotkeyVariable {
 	switch kind {
-	case formTableQueryVariableKindAICommand:
-		return aiCommandPromptVariables
 	case formTableQueryVariableKindDictation:
 		return dictationPromptVariables
 	case formTableQueryVariableKindWebSearch:
@@ -2149,28 +2083,6 @@ func (a *App) onFormTableKey(event woxui.KeyEvent) bool {
 		return false
 	}
 
-	if state.skillAdd != nil {
-		// The add-skill dialog owns Enter and Escape; printable keys continue into
-		// the focused text field for normal editing.
-		if event.Down {
-			switch event.Key {
-			case woxui.KeyEscape:
-				a.cancelFormTableSkillAdd()
-				return true
-			case woxui.KeyEnter:
-				a.addFormTableSkill()
-				return true
-			}
-		}
-		return false
-	}
-	if state.mcpJSONImport != nil {
-		if event.Down && event.Key == woxui.KeyEscape {
-			a.cancelFormTableMCPJSONImport()
-			return true
-		}
-		return false
-	}
 	if editor := state.windowGroupEditor; editor != nil {
 		if event.Key == woxui.KeyEscape {
 			if editor.appPickerSlot != "" {
@@ -2310,13 +2222,13 @@ func (a *App) onFormTableKey(event woxui.KeyEvent) bool {
 			a.moveFormTableRowFocus(-1)
 		}
 	case woxui.KeyArrowLeft:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeFormTableRowChoice(focused, -1)
 		} else {
 			a.editFormTableRowKey(event)
 		}
 	case woxui.KeyArrowRight:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeFormTableRowChoice(focused, 1)
 		} else {
 			a.editFormTableRowKey(event)
@@ -2328,7 +2240,7 @@ func (a *App) onFormTableKey(event woxui.KeyEvent) bool {
 			a.recordFormTableRowHotkey(focused)
 		} else if fieldType == "app" {
 			a.openFormTableAppPicker(focused)
-		} else if fieldType == "select" || fieldType == "selectAIModel" {
+		} else if fieldType == "select" {
 			a.openFocusedFormTableRowChoice(focused)
 		} else if fieldType == "checkbox" {
 			a.changeFormTableRowChoice(focused, 1)

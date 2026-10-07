@@ -8,24 +8,18 @@ import (
 type PluginSettingValueTableColumnType = string
 
 const (
-	PluginSettingValueTableColumnTypeText                   PluginSettingValueTableColumnType = "text"
-	PluginSettingValueTableColumnTypeTextList               PluginSettingValueTableColumnType = "textList"
-	PluginSettingValueTableColumnTypeCheckbox               PluginSettingValueTableColumnType = "checkbox"
-	PluginSettingValueTableColumnTypeDirPath                PluginSettingValueTableColumnType = "dirPath"
-	PluginSettingValueTableColumnTypeHotkey                 PluginSettingValueTableColumnType = "hotkey"
-	PluginSettingValueTableColumnTypeSelect                 PluginSettingValueTableColumnType = "select"
-	PluginSettingValueTableColumnTypeSelectAIModel          PluginSettingValueTableColumnType = "selectAIModel"
-	PluginSettingValueTableColumnTypeQueryHotkeyQuery       PluginSettingValueTableColumnType = "queryHotkeyQuery"
-	PluginSettingValueTableColumnTypeAICommandPrompt        PluginSettingValueTableColumnType = "aiCommandPrompt"
-	PluginSettingValueTableColumnTypeDictationPrompt        PluginSettingValueTableColumnType = "dictationPrompt"
-	PluginSettingValueTableColumnTypeQueryVariable          PluginSettingValueTableColumnType = "queryVariable"
-	PluginSettingValueTableColumnTypeQueryVariableList      PluginSettingValueTableColumnType = "queryVariableList"
-	PluginSettingValueTableColumnTypeAIModelStatus          PluginSettingValueTableColumnType = "aiModelStatus"
-	PluginSettingValueTableColumnTypeAIMCPServerTools       PluginSettingValueTableColumnType = "aiMCPServerTools"
-	PluginSettingValueTableColumnTypeAISelectMCPServerTools PluginSettingValueTableColumnType = "aiSelectMCPServerTools"
-	PluginSettingValueTableColumnTypeAISelectSkills         PluginSettingValueTableColumnType = "aiSelectSkills"
-	PluginSettingValueTableColumnTypeWoxImage               PluginSettingValueTableColumnType = "woxImage"
-	PluginSettingValueTableColumnTypeApp                    PluginSettingValueTableColumnType = "app"
+	PluginSettingValueTableColumnTypeText              PluginSettingValueTableColumnType = "text"
+	PluginSettingValueTableColumnTypeTextList          PluginSettingValueTableColumnType = "textList"
+	PluginSettingValueTableColumnTypeCheckbox          PluginSettingValueTableColumnType = "checkbox"
+	PluginSettingValueTableColumnTypeDirPath           PluginSettingValueTableColumnType = "dirPath"
+	PluginSettingValueTableColumnTypeHotkey            PluginSettingValueTableColumnType = "hotkey"
+	PluginSettingValueTableColumnTypeSelect            PluginSettingValueTableColumnType = "select"
+	PluginSettingValueTableColumnTypeQueryHotkeyQuery  PluginSettingValueTableColumnType = "queryHotkeyQuery"
+	PluginSettingValueTableColumnTypeDictationPrompt   PluginSettingValueTableColumnType = "dictationPrompt"
+	PluginSettingValueTableColumnTypeQueryVariable     PluginSettingValueTableColumnType = "queryVariable"
+	PluginSettingValueTableColumnTypeQueryVariableList PluginSettingValueTableColumnType = "queryVariableList"
+	PluginSettingValueTableColumnTypeWoxImage          PluginSettingValueTableColumnType = "woxImage"
+	PluginSettingValueTableColumnTypeApp               PluginSettingValueTableColumnType = "app"
 )
 
 const (

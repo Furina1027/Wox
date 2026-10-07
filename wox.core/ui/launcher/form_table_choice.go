@@ -60,7 +60,7 @@ func (a *App) openFormTableRowChoice(index int, anchor woxui.Rect) {
 		return
 	}
 	definition := state.rowForm.definitions[index]
-	if (definition.Type != "select" && definition.Type != "selectAIModel") || len(definition.Value.Options) == 0 {
+	if definition.Type != "select" || len(definition.Value.Options) == 0 {
 		return
 	}
 	syncFormFieldsEditorLocked(state.rowForm)
@@ -115,9 +115,6 @@ func (a *App) chooseFormTableChoice(index int) {
 	a.setSettingChoiceTooltip(false, "", woxui.Rect{})
 	state.rowForm.values[definition.Value.Key] = definition.Value.Options[index].Value
 	setFormFieldsFocusLocked(state.rowForm, fieldIndex)
-	if definition.Value.Key == "Name" {
-		applyAIProviderDefaultHostLocked(state, true, a.aiSettings.ProviderCatalog())
-	}
 	if formTableRowDependsOnField(state.definition, definition.Value.Key) {
 		applyFormTableRowVisibleFieldsLocked(state)
 	}

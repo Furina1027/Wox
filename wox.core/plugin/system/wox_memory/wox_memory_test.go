@@ -104,7 +104,7 @@ func TestAttributedDiagnosticsPartitionThePrivateWorkingSet(t *testing.T) {
 		gpu:                ui.GPUMemoryUsage{Available: true, SystemBytes: 300, DedicatedBytes: 80},
 		owners: []memoryProcessOwner{
 			{kind: memoryOwnerPluginHost, label: string(plugin.PLUGIN_RUNTIME_NODEJS), processID: 2, processName: "node.exe", pluginCount: 1, memoryBytes: 200},
-			{kind: memoryOwnerMCPServer, label: "duckduckgo", processID: 4, processName: "uvx.exe", memoryBytes: 180},
+			{kind: memoryOwnerPluginHost, label: string(plugin.PLUGIN_RUNTIME_PYTHON), processID: 4, processName: "python.exe", memoryBytes: 180},
 		},
 		otherProcesses: []memoryProcessDiagnostics{
 			{name: "msedgewebview2.exe", processID: 9, memoryBytes: 150},
@@ -133,7 +133,7 @@ func TestAttributedDiagnosticsPartitionThePrivateWorkingSet(t *testing.T) {
 	}
 
 	externalGroup := translateMemory(context.Background(), "plugin_wox_memory_host_group")
-	wantExternal := []string{"memory.host." + string(plugin.PLUGIN_RUNTIME_NODEJS), "memory.mcp.duckduckgo", "memory.process.other"}
+	wantExternal := []string{"memory.host." + string(plugin.PLUGIN_RUNTIME_NODEJS), "memory.host." + string(plugin.PLUGIN_RUNTIME_PYTHON), "memory.process.other"}
 	if got := grouped[externalGroup]; !slices.Equal(got, wantExternal) {
 		t.Fatalf("external processes = %#v, want %#v", got, wantExternal)
 	}
@@ -152,17 +152,17 @@ func TestSeparateProcessResultsGroupHelpersUnderTheirOwner(t *testing.T) {
 				helpers:     []memoryProcessDiagnostics{{name: "pip.exe", processID: 8, memoryBytes: 20}},
 			},
 			{
-				// The launcher chain of a stdio MCP server has to land under the configured
-				// server name, which is the only label that means anything to the user.
-				kind:        memoryOwnerMCPServer,
-				label:       "duckduckgo",
+				// A second host with a longer launcher chain still has to land under its own
+				// label, which is the only name that means anything to the user.
+				kind:        memoryOwnerPluginHost,
+				label:       string(plugin.PLUGIN_RUNTIME_NODEJS),
 				processID:   20,
-				processName: "uvx.exe",
+				processName: "node.exe",
 				memoryBytes: 10,
 				helperBytes: 260,
 				helpers: []memoryProcessDiagnostics{
-					{name: "uv.exe", processID: 21, memoryBytes: 60},
-					{name: "python.exe", processID: 22, memoryBytes: 200},
+					{name: "esbuild.exe", processID: 21, memoryBytes: 60},
+					{name: "node.exe", processID: 22, memoryBytes: 200},
 				},
 			},
 		},
@@ -171,13 +171,13 @@ func TestSeparateProcessResultsGroupHelpersUnderTheirOwner(t *testing.T) {
 
 	grouped := resultIDsByGroup(results)
 	hostGroup := fmt.Sprintf(translateMemory(context.Background(), "plugin_wox_memory_host_process_group"), plugin.PLUGIN_RUNTIME_PYTHON, formatMemoryBytes(320))
-	mcpGroup := fmt.Sprintf(translateMemory(context.Background(), "plugin_wox_memory_mcp_process_group"), "duckduckgo", formatMemoryBytes(270))
+	chainGroup := fmt.Sprintf(translateMemory(context.Background(), "plugin_wox_memory_host_process_group"), plugin.PLUGIN_RUNTIME_NODEJS, formatMemoryBytes(270))
 	otherGroup := fmt.Sprintf(translateMemory(context.Background(), "plugin_wox_memory_other_process_group"), formatMemoryBytes(400))
 	if got := grouped[hostGroup]; !slices.Equal(got, []string{"memory.process.7", "memory.process.8"}) {
 		t.Fatalf("host processes = %#v, want the host and its helper sorted by size", got)
 	}
-	if got := grouped[mcpGroup]; !slices.Equal(got, []string{"memory.process.22", "memory.process.21", "memory.process.20"}) {
-		t.Fatalf("MCP processes = %#v, want the whole launcher chain sorted by size", got)
+	if got := grouped[chainGroup]; !slices.Equal(got, []string{"memory.process.22", "memory.process.21", "memory.process.20"}) {
+		t.Fatalf("second host processes = %#v, want the whole launcher chain sorted by size", got)
 	}
 	if got := grouped[otherGroup]; !slices.Equal(got, []string{"memory.process.11"}) {
 		t.Fatalf("other processes = %#v, want the WebView2 browser", got)
@@ -191,7 +191,7 @@ func TestSeparateProcessResultsGroupHelpersUnderTheirOwner(t *testing.T) {
 	// Platforms without a process subtree walk leave the executable name empty, so the owner
 	// label has to stand in for it.
 	unnamed := separateProcessResults(context.Background(), memoryDiagnostics{
-		owners: []memoryProcessOwner{{kind: memoryOwnerMCPServer, label: "duckduckgo", processID: 3, memoryBytes: 100}},
+		owners: []memoryProcessOwner{{kind: memoryOwnerPluginHost, label: string(plugin.PLUGIN_RUNTIME_PYTHON), processID: 3, memoryBytes: 100}},
 	})
 	if len(unnamed) != 1 || unnamed[0].Title == "" {
 		t.Fatalf("an owner without an executable name still needs a title, got %#v", unnamed)

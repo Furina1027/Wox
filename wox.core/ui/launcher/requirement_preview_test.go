@@ -135,7 +135,7 @@ func TestRequirementPreviewRendersSettingTooltipAsMarkdown(t *testing.T) {
 	}
 
 	app := &App{
-		aiSettings: newAISettingsController(CommonDeps{Translate: func(s string) string { return s }}),
+
 		requirementForm: &requirementFormState{
 			formFieldsState: newFormFieldsState(data.SettingDefinitions, data.Values, false),
 			key:             key,

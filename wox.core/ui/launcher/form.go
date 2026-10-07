@@ -217,7 +217,7 @@ func handleFormEditorKey(editor formEditingController, definition formDefinition
 }
 
 func formDefinitionFocusable(definition formDefinition) bool {
-	return formDefinitionTextEditable(definition) || definition.Type == "checkbox" || definition.Type == "select" || definition.Type == "selectAIModel" || definition.Type == "hotkey" || definition.Type == "dictationHotkey" || definition.Type == "app" || definition.Type == "table" || definition.Type == "dictationModel" || definition.Type == "ocrModel" || definition.Type == "fileIndexService"
+	return formDefinitionTextEditable(definition) || definition.Type == "checkbox" || definition.Type == "select" || definition.Type == "hotkey" || definition.Type == "dictationHotkey" || definition.Type == "app" || definition.Type == "table" || definition.Type == "dictationModel" || definition.Type == "ocrModel" || definition.Type == "fileIndexService"
 }
 
 func formDefinitionTextEditable(definition formDefinition) bool {
@@ -263,7 +263,7 @@ func changeFormFieldsChoiceLocked(fields *formFieldsState, index, delta int) {
 		} else {
 			fields.values[key] = "true"
 		}
-	case "select", "selectAIModel":
+	case "select":
 		if len(definition.Value.Options) == 0 {
 			return
 		}
@@ -404,13 +404,13 @@ func (a *App) onFormKey(event woxui.KeyEvent) bool {
 			a.moveFormFocus(-1)
 		}
 	case woxui.KeyArrowLeft:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeFormChoice(focused, -1)
 		} else {
 			a.editFormKey(event)
 		}
 	case woxui.KeyArrowRight:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeFormChoice(focused, 1)
 		} else {
 			a.editFormKey(event)
@@ -426,7 +426,7 @@ func (a *App) onFormKey(event woxui.KeyEvent) bool {
 			if event.Key == woxui.KeySpace {
 				a.recordActionFormHotkey(focused)
 			}
-		} else if fieldType == "checkbox" || fieldType == "select" || fieldType == "selectAIModel" {
+		} else if fieldType == "checkbox" || fieldType == "select" {
 			a.changeFormChoice(focused, 1)
 		}
 	default:
@@ -570,6 +570,6 @@ func (a *App) restoreQueryTextInput() {
 // queryCanFocus keeps modal editors from accepting query input without disabling normal focus switching.
 func (a *App) queryCanFocus() bool {
 	formTableActive := a.launcherTableEditor != nil
-	return !a.show.HideQueryBox && !a.chatFullscreen && !a.terminalFullscreen && a.form == nil && !formTableActive && !a.actionPanel &&
+	return !a.show.HideQueryBox && !a.terminalFullscreen && a.form == nil && !formTableActive && !a.actionPanel &&
 		(a.requirementForm == nil || !a.requirementForm.active) && (a.triggerConflict == nil || !a.triggerConflict.active)
 }

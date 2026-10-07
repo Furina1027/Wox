@@ -472,7 +472,6 @@ export type PluginSettingValueTableColumnType =
   | "dirPath"
   | "hotkey"
   | "select"
-  | "selectAIModel"
   | "woxImage"
 
 /**

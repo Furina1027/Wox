@@ -131,7 +131,6 @@ Methods for interacting with Wox:
 - **Logging**: `log()`
 - **i18n**: `getTranslation()`
 - **Results**: `getUpdatableResult()`, `updateResult()`
-- **AI**: `llmStream()`
 - **MRU**: `onMruRestore()`
 - **Callbacks**: `onUnload()`, `onDeepLink()`
 - **Commands**: `registerQueryCommands()`
@@ -257,25 +256,6 @@ const settings: PluginSettingDefinitionItem[] = [
 
 `Style` is deprecated and should not be used for new settings. Wox owns setting
 spacing and control widths so plugin settings remain visually consistent.
-
-## AI/LLM Integration
-
-Stream responses from AI models:
-
-```typescript
-const conversations: AI.Conversation[] = [
-  { Role: "system", Text: "You are a helpful assistant.", Timestamp: Date.now() },
-  { Role: "user", Text: "Hello!", Timestamp: Date.now() }
-]
-
-await api.LLMStream(ctx, conversations, (data: AI.ChatStreamData) => {
-  if (data.Status === "streaming") {
-    console.log("Chunk:", data.Data)
-  } else if (data.Status === "finished") {
-    console.log("Complete:", data.Data)
-  }
-})
-```
 
 ## Plugin Metadata
 

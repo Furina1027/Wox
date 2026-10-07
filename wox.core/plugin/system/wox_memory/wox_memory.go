@@ -9,7 +9,6 @@ import (
 	"runtime/pprof"
 	"sort"
 
-	"wox/ai"
 	"wox/common"
 	"wox/common/icons"
 	"wox/i18n"
@@ -139,15 +138,14 @@ type memoryProcessOwnerKind int
 
 const (
 	memoryOwnerPluginHost memoryProcessOwnerKind = iota
-	memoryOwnerMCPServer
 )
 
 // memoryProcessOwner carries a process Wox started plus the helpers below it, such as the
-// interpreters a Python host launches or the launcher chain a stdio MCP server expands into. The
-// default page shows the combined total so one line represents everything that owner costs.
+// interpreters a Python host launches. The default page shows the combined total so one line
+// represents everything that owner costs.
 type memoryProcessOwner struct {
 	kind memoryProcessOwnerKind
-	// label is the runtime for a plugin host and the configured server name for an MCP server.
+	// label is the runtime that owns this process tree.
 	label       string
 	processID   int
 	processName string
@@ -164,19 +162,13 @@ func (o memoryProcessOwner) totalBytes() uint64 {
 
 // title names the owner on the default page.
 func (o memoryProcessOwner) title(ctx context.Context) string {
-	if o.kind == memoryOwnerMCPServer {
-		return fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_mcp_server"), o.label)
-	}
 	return fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_host"), o.label)
 }
 
-// detail describes the owner's own process, plus the helpers it is answering for. A plugin host
-// reports how many plugins it runs, while an MCP server has no equivalent count.
+// detail describes the owner's own process, plus the helpers it is answering for, and reports how
+// many plugins the host runs.
 func (o memoryProcessOwner) detail(ctx context.Context) string {
-	detail := fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_mcp_server_detail"), formatMemoryBytes(o.memoryBytes), o.processID)
-	if o.kind == memoryOwnerPluginHost {
-		detail = fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_host_detail"), formatMemoryBytes(o.memoryBytes), o.processID, o.pluginCount)
-	}
+	detail := fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_host_detail"), formatMemoryBytes(o.memoryBytes), o.processID, o.pluginCount)
 	if len(o.helpers) > 0 {
 		detail += " · " + fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_host_helpers"), len(o.helpers), formatMemoryBytes(o.helperBytes))
 	}
@@ -185,17 +177,11 @@ func (o memoryProcessOwner) detail(ctx context.Context) string {
 
 // resultID keeps a stable score key per owner so result ordering does not jump between queries.
 func (o memoryProcessOwner) resultID() string {
-	if o.kind == memoryOwnerMCPServer {
-		return fmt.Sprintf("memory.mcp.%s", o.label)
-	}
 	return fmt.Sprintf("memory.host.%s", o.label)
 }
 
 // detailGroup heads the owner's section on the per-process page.
 func (o memoryProcessOwner) detailGroup(ctx context.Context) string {
-	if o.kind == memoryOwnerMCPServer {
-		return fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_mcp_process_group"), o.label, formatMemoryBytes(o.totalBytes()))
-	}
 	return fmt.Sprintf(translateMemory(ctx, "plugin_wox_memory_host_process_group"), o.label, formatMemoryBytes(o.totalBytes()))
 }
 
@@ -837,21 +823,6 @@ func captureMemoryDiagnostics(ctx context.Context) memoryDiagnostics {
 			processID:   pid,
 			pluginCount: pluginCount,
 			memoryBytes: hostBytes,
-		})
-	}
-
-	// A stdio MCP server is a process tree Wox started just like a plugin host, so it belongs to
-	// the server the user configured rather than to a nameless bucket of child processes.
-	for _, server := range ai.ListMCPServerProcesses() {
-		serverBytes, err := processmemory.GetProcessMemoryBytes(server.ProcessID)
-		if err != nil {
-			continue
-		}
-		diagnostics.owners = append(diagnostics.owners, memoryProcessOwner{
-			kind:        memoryOwnerMCPServer,
-			label:       server.Name,
-			processID:   server.ProcessID,
-			memoryBytes: serverBytes,
 		})
 	}
 

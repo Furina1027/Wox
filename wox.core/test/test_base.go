@@ -19,7 +19,7 @@ import (
 
 	// Import all system plugins to trigger their init() functions
 	// This ensures all system plugins are registered in plugin.AllSystemPlugin
-	_ "wox/plugin/system" // Contains multiple root-level plugins: ai_command.go, backup.go, browser.go, etc.
+	_ "wox/plugin/system" // Contains multiple root-level plugins: backup.go, browser.go, etc.
 	_ "wox/plugin/system/app"
 	_ "wox/plugin/system/calculator"
 	_ "wox/plugin/system/converter"

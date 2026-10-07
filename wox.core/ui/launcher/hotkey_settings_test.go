@@ -73,11 +73,11 @@ func TestOpenTrayQueryEditorOpensSelectedRow(t *testing.T) {
 		settingTab:      "general",
 		generalSettings: general,
 		hotkeySettings:  newHotkeySettingsController(deps),
-		aiSettings:      newAISettingsController(deps),
-		pluginSettings:  newPluginSettingsController(deps),
-		settingsSearch:  newSettingsSearchController(deps),
-		themeSettings:   newThemeSettingsController(deps),
-		sharedEdit:      newSharedEditState(),
+
+		pluginSettings: newPluginSettingsController(deps),
+		settingsSearch: newSettingsSearchController(deps),
+		themeSettings:  newThemeSettingsController(deps),
+		sharedEdit:     newSharedEditState(),
 	}
 
 	app.openTrayQueryEditor(1)
@@ -134,11 +134,11 @@ func TestOpenTrayQueryEditorIgnoresInvalidRow(t *testing.T) {
 		settingTab:      "general",
 		generalSettings: general,
 		hotkeySettings:  newHotkeySettingsController(deps),
-		aiSettings:      newAISettingsController(deps),
-		pluginSettings:  newPluginSettingsController(deps),
-		settingsSearch:  newSettingsSearchController(deps),
-		themeSettings:   newThemeSettingsController(deps),
-		sharedEdit:      newSharedEditState(),
+
+		pluginSettings: newPluginSettingsController(deps),
+		settingsSearch: newSettingsSearchController(deps),
+		themeSettings:  newThemeSettingsController(deps),
+		sharedEdit:     newSharedEditState(),
 	}
 
 	app.openTrayQueryEditor(5)

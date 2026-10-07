@@ -297,8 +297,6 @@ func (a *App) reloadPlugins(store bool, preferredID string) error {
 		return err
 	}
 
-	requestModels := false
-	requestProviders := false
 	if err := a.runOnUI("apply loaded plugin catalog", func() {
 		plugins := a.pluginSettings.Plugins()
 		if !store {
@@ -311,12 +309,10 @@ func (a *App) reloadPlugins(store bool, preferredID string) error {
 		if selected >= 0 && selected < len(plugins) {
 			a.setPluginSelectionLocked(selected)
 		}
-		requestModels, requestProviders = a.queuePluginFormAIModelsLocked()
 		a.invalidateSettingsWindow()
 	}); err != nil {
 		return err
 	}
-	a.startPluginFormAIModelLoads(requestModels, requestProviders)
 	return nil
 }
 
@@ -596,9 +592,6 @@ func (a *App) setPluginSelectionLocked(index int) {
 	applyDictationFormCompatibility(plugin, values)
 	fields := newFormFieldsState(definitions, values, false)
 	preserveDictationCompatibilityValues(plugin.ID, fields.values, values)
-	if models := a.aiSettings.Models(); len(models) > 0 {
-		applyAIModelOptionsLocked(&fields, models)
-	}
 	initial := make(map[string]string, len(fields.values))
 	for key, value := range fields.values {
 		initial[key] = value
@@ -757,39 +750,8 @@ func (a *App) selectPlugin(index int) {
 		}
 	}
 	a.setPluginSelectionLocked(index)
-	requestModels, requestProviders := a.queuePluginFormAIModelsLocked()
 	a.updateSettingsTextInput(false)
-	a.startPluginFormAIModelLoads(requestModels, requestProviders)
 	a.invalidateSettingsWindow()
-}
-
-// queuePluginFormAIModelsLocked applies any cached catalog to selectAIModel fields
-// and reports whether a fetch is still needed. Callers start the async load after
-// finishing other UI-thread work so the helper stays free of goroutine launches.
-func (a *App) queuePluginFormAIModelsLocked() (requestModels, requestProviders bool) {
-	form := a.pluginSettings.Form()
-	if form == nil || !hasFormDefinitionType(form.definitions, "selectAIModel") {
-		return false, false
-	}
-	if models := a.aiSettings.Models(); len(models) > 0 {
-		applyAIModelOptionsLocked(&form.formFieldsState, models)
-	}
-	if !a.aiSettings.ModelsLoaded() && !a.aiSettings.ModelsLoading() {
-		a.aiSettings.SetModelsLoading(true)
-		requestModels = true
-	}
-	return requestModels, true
-}
-
-// startPluginFormAIModelLoads fetches the shared model catalog and provider icons
-// after a plugin form that contains selectAIModel has been built or rebuilt.
-func (a *App) startPluginFormAIModelLoads(requestModels, requestProviders bool) {
-	if requestModels {
-		util.Go(a.lifecycleCtx, "load AI models for plugin settings", a.loadAIModels)
-	}
-	if requestProviders {
-		util.Go(a.lifecycleCtx, "load AI provider icons for plugin settings", a.loadAIProviderCatalog)
-	}
 }
 
 func (a *App) movePluginSelection(delta int) {
@@ -1127,13 +1089,13 @@ func (a *App) onPluginSettingsKey(event woxui.KeyEvent) bool {
 			a.movePluginFormFocus(-1)
 		}
 	case woxui.KeyArrowLeft:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changePluginFormChoice(focused, -1)
 		} else {
 			a.editPluginFormKey(event)
 		}
 	case woxui.KeyArrowRight:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changePluginFormChoice(focused, 1)
 		} else {
 			a.editPluginFormKey(event)
@@ -1153,7 +1115,7 @@ func (a *App) onPluginSettingsKey(event woxui.KeyEvent) bool {
 			a.openPluginModelManager(focused, anchor)
 		} else if fieldType == "dictationHotkey" {
 			a.recordPluginFormHotkey(focused)
-		} else if fieldType == "select" || fieldType == "selectAIModel" {
+		} else if fieldType == "select" {
 			a.openFocusedPluginFormChoice(focused)
 		} else if fieldType == "checkbox" {
 			a.changePluginFormChoice(focused, 1)
@@ -1363,11 +1325,7 @@ func (a *App) changePluginFormChoice(index, delta int) {
 func (a *App) openFocusedPluginFormChoice(index int) {
 	anchor := woxui.Rect{}
 	if host := a.settingsHost; host != nil {
-		key := fmt.Sprintf("plugin-settings-field-%d", index)
-		if form := a.pluginSettings.Form(); form != nil && index >= 0 && index < len(form.definitions) && form.definitions[index].Type == "selectAIModel" {
-			key += "-model"
-		}
-		anchor, _ = host.BoundsForKey(woxwidget.Key(key))
+		anchor, _ = host.BoundsForKey(woxwidget.Key(fmt.Sprintf("plugin-settings-field-%d", index)))
 	}
 	a.openPluginFormChoice(index, anchor)
 }
@@ -1379,10 +1337,6 @@ func (a *App) openPluginFormChoice(index int, anchor woxui.Rect) {
 		return
 	}
 	definition := state.definitions[index]
-	if definition.Type == "selectAIModel" {
-		a.openPluginAIModelChoice(index, false, anchor)
-		return
-	}
 	if definition.Type != "select" || len(definition.Value.Options) == 0 {
 		return
 	}
@@ -1412,218 +1366,6 @@ func (a *App) openPluginFormChoice(index int, anchor woxui.Rect) {
 	state.status = ""
 	a.updateSettingsTextInput(false)
 	a.invalidateSettingsWindow()
-}
-
-func aiModelProviderKey(model aiModel) string {
-	return model.Provider + "\x00" + model.ProviderAlias
-}
-
-// openPluginAIModelChoice opens the provider or filterable model menu for one AI model field.
-func (a *App) openPluginAIModelChoice(index int, providerChoice bool, anchor woxui.Rect) {
-	state := a.pluginSettings.Form()
-	if state == nil || index < 0 || index >= len(state.definitions) {
-		return
-	}
-	definition := state.definitions[index]
-	if definition.Type != "selectAIModel" {
-		return
-	}
-	models := aiModelsFromOptions(definition.Value.Options)
-	if len(models) == 0 {
-		if cached := a.aiSettings.Models(); len(cached) > 0 {
-			applyAIModelOptionsLocked(&state.formFieldsState, cached)
-			models = aiModelsFromOptions(state.definitions[index].Value.Options)
-		}
-	}
-	if len(models) == 0 {
-		a.openPluginAIModelEmptyChoice(index, anchor)
-		return
-	}
-	var selected aiModel
-	_ = json.Unmarshal([]byte(state.values[definition.Value.Key]), &selected)
-	selectedProvider := aiModelProviderKey(selected)
-	choices := make([]settingChoice, 0, len(models))
-	icons := make(map[string]woxImage)
-	if providerChoice {
-		seen := make(map[string]bool)
-		for _, model := range models {
-			key := aiModelProviderKey(model)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			label := model.Provider
-			if model.ProviderAlias != "" {
-				label = model.ProviderAlias
-			}
-			choices = append(choices, settingChoice{value: key, label: label})
-		}
-		for _, provider := range a.aiSettings.ProviderCatalog() {
-			for _, choice := range choices {
-				providerName, _, _ := strings.Cut(choice.value, "\x00")
-				if provider.Name == providerName {
-					icons[choice.value] = provider.Icon
-				}
-			}
-		}
-	} else {
-		for _, model := range models {
-			if selectedProvider != "\x00" && aiModelProviderKey(model) != selectedProvider {
-				continue
-			}
-			encoded, err := json.Marshal(model)
-			if err == nil {
-				choices = append(choices, settingChoice{value: string(encoded), label: model.Name})
-			}
-		}
-		if len(choices) == 0 && selected.Name != "" {
-			choices = append(choices, settingChoice{value: state.values[definition.Value.Key], label: selected.Name})
-		}
-		for _, provider := range a.aiSettings.ProviderCatalog() {
-			if provider.Name != selected.Provider {
-				continue
-			}
-			for _, choice := range choices {
-				icons[choice.value] = provider.Icon
-			}
-		}
-	}
-	if len(choices) == 0 {
-		return
-	}
-	syncFormFieldsEditorLocked(&state.formFieldsState)
-	setFormFieldsFocusLocked(&state.formFieldsState, index)
-	currentValue := state.values[definition.Value.Key]
-	if providerChoice {
-		currentValue = selectedProvider
-	}
-	a.generalSettings.SetChoicePicker(&settingChoicePickerState{
-		item: settingItem{
-			key: "plugin-ai-model:" + definition.Value.Key, title: a.translate(definition.Value.Label), value: currentValue,
-			choices: choices, icons: icons, preserveIconColor: true, filterable: !providerChoice,
-		},
-		anchor: anchor,
-		onChoose: func(choice settingChoice) {
-			if providerChoice {
-				a.setPluginAIModelProvider(index, choice.value)
-			} else {
-				a.setPluginFormChoice(index, choice.value)
-			}
-		},
-	})
-	state.status = ""
-	a.updateSettingsTextInput(false)
-	a.invalidateSettingsWindow()
-}
-
-const pluginAIModelOpenSettingsValue = "open-ai-settings"
-
-// openPluginAIModelEmptyChoice keeps an empty picker usable by offering a jump to AI settings.
-func (a *App) openPluginAIModelEmptyChoice(index int, anchor woxui.Rect) {
-	state := a.pluginSettings.Form()
-	if state == nil || index < 0 || index >= len(state.definitions) {
-		return
-	}
-	if anchor.Width <= 0 || anchor.Height <= 0 {
-		if host := a.settingsHost; host != nil {
-			anchor, _ = host.BoundsForKey(woxwidget.Key(fmt.Sprintf("plugin-settings-field-%d-provider", index)))
-		}
-	}
-	syncFormFieldsEditorLocked(&state.formFieldsState)
-	setFormFieldsFocusLocked(&state.formFieldsState, index)
-	a.generalSettings.SetChoicePicker(&settingChoicePickerState{
-		item: settingItem{
-			key:   "plugin-ai-model-empty:" + state.definitions[index].Value.Key,
-			title: a.translate("i18n:ui_ai_model_selector_no_models_title"),
-			choices: []settingChoice{{
-				value: pluginAIModelOpenSettingsValue,
-				label: a.translate("i18n:ui_ai_model_selector_open_ai_settings"),
-			}},
-		},
-		anchor:   anchor,
-		onChoose: func(settingChoice) { a.openPluginAISettings() },
-	})
-	state.status = a.translate("i18n:ui_ai_model_selector_no_models_desc")
-	state.statusError = false
-	if !a.aiSettings.ModelsLoaded() && !a.aiSettings.ModelsLoading() {
-		a.aiSettings.SetModelsLoading(true)
-		util.Go(a.lifecycleCtx, "load AI models for empty plugin picker", a.loadAIModels)
-	}
-	a.updateSettingsTextInput(false)
-	a.invalidateSettingsWindow()
-}
-
-// openPluginAISettings leaves the plugin form so the user can add a provider.
-func (a *App) openPluginAISettings() {
-	a.generalSettings.SetChoicePicker(nil)
-	a.selectSettingTab("ai")
-}
-
-func (a *App) setPluginAIModelProvider(index int, providerKey string) {
-	state := a.pluginSettings.Form()
-	if state == nil || index < 0 || index >= len(state.definitions) {
-		return
-	}
-	for _, model := range aiModelsFromOptions(state.definitions[index].Value.Options) {
-		if aiModelProviderKey(model) == providerKey {
-			encoded, err := json.Marshal(model)
-			if err == nil {
-				a.setPluginFormChoice(index, string(encoded))
-			}
-			return
-		}
-	}
-}
-
-func (a *App) setPluginAIModelName(index int, name string) {
-	state := a.pluginSettings.Form()
-	if state == nil || index < 0 || index >= len(state.definitions) || strings.TrimSpace(name) == "" {
-		return
-	}
-	definition := state.definitions[index]
-	var model aiModel
-	if json.Unmarshal([]byte(state.values[definition.Value.Key]), &model) != nil || model.Provider == "" {
-		return
-	}
-	model.Name = name
-	encoded, err := json.Marshal(model)
-	if err != nil {
-		return
-	}
-	setFormFieldsFocusLocked(&state.formFieldsState, index)
-	state.values[definition.Value.Key] = string(encoded)
-	state.status = ""
-	a.invalidateSettingsWindow()
-	a.submitPluginSettings()
-}
-
-func (a *App) finishPluginAIModelEdit(index int, name string) {
-	state := a.pluginSettings.Form()
-	if state == nil || index < 0 || index >= len(state.definitions) {
-		return
-	}
-	definition := state.definitions[index]
-	var selected aiModel
-	_ = json.Unmarshal([]byte(state.values[definition.Value.Key]), &selected)
-	models := aiModelsFromOptions(definition.Value.Options)
-	for _, model := range models {
-		if aiModelProviderKey(model) == aiModelProviderKey(selected) && model.Name == name {
-			encoded, err := json.Marshal(model)
-			if err == nil {
-				a.setPluginFormChoice(index, string(encoded))
-			}
-			return
-		}
-	}
-	for _, model := range models {
-		if aiModelProviderKey(model) == aiModelProviderKey(selected) {
-			encoded, err := json.Marshal(model)
-			if err == nil {
-				a.setPluginFormChoice(index, string(encoded))
-			}
-			return
-		}
-	}
 }
 
 // setPluginFormChoice stages one exact dropdown value without depending on option ordering.
@@ -1877,8 +1619,6 @@ func (a *App) refreshPluginFormDefinitions(pluginID string) {
 		log.Printf("refresh plugin form definitions: %v", err)
 		return
 	}
-	requestModels := false
-	requestProviders := false
 	_ = a.runOnUI("refresh plugin form definitions", func() {
 		current := a.pluginSettings.Plugins()
 		for index := range current {
@@ -1898,13 +1638,11 @@ func (a *App) refreshPluginFormDefinitions(pluginID string) {
 			a.settingsSearch.SetPlugins(current)
 			if form := a.pluginSettings.Form(); form != nil && form.pluginID == pluginID {
 				a.setPluginSelectionLocked(a.pluginSettings.Selected())
-				requestModels, requestProviders = a.queuePluginFormAIModelsLocked()
 			}
 			break
 		}
 		a.invalidateSettingsWindow()
 	})
-	a.startPluginFormAIModelLoads(requestModels, requestProviders)
 }
 
 // applySavedPluginSettingValues keeps the local catalog consistent until its next normal refresh.

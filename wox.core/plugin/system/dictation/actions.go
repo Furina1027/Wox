@@ -17,28 +17,18 @@ const (
 
 	dictationActionOutputInput   = "input"
 	dictationActionOutputOverlay = "overlay"
-	dictationActionOutputChat    = "chat"
-
-	dictationVariableText         = "{wox:dictation_text}"
-	dictationVariableSelectedText = "{wox:selected_text}"
 )
 
 // dictationAction is the single persisted shape for both the simple default
-// dictation path and user-created AI-powered dictation actions.
+// dictation path and user-created dictation actions with their own hotkey and
+// output destination.
 type dictationAction struct {
-	ID              string `json:"id"`
-	Type            string `json:"type"`
-	Name            string `json:"name"`
-	Disabled        bool   `json:"disabled,omitempty"`
-	Hotkey          string `json:"hotkey"`
-	Output          string `json:"output"`
-	Model           string `json:"model,omitempty"`
-	Prompt          string `json:"prompt,omitempty"`
-	AIRefineEnabled bool   `json:"aiRefineEnabled,omitempty"`
-}
-
-type dictationActionInputContext struct {
-	SelectedText string
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Name     string `json:"name"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Hotkey   string `json:"hotkey"`
+	Output   string `json:"output"`
 }
 
 func newDefaultDictationAction() dictationAction {
@@ -107,16 +97,6 @@ func normalizeDictationActions(actions []dictationAction) []dictationAction {
 	return normalized
 }
 
-// defaultDictationActionFromSetting returns the normalized default action from persisted JSON.
-func defaultDictationActionFromSetting(raw string) dictationAction {
-	for _, action := range normalizeDictationActions(parseDictationActions(raw)) {
-		if action.Type == dictationActionTypeDefault {
-			return action
-		}
-	}
-	return newDefaultDictationAction()
-}
-
 func normalizeDictationAction(action dictationAction) dictationAction {
 	if strings.TrimSpace(action.Type) == "" && strings.TrimSpace(action.ID) == dictationActionIDDefault {
 		action.Type = dictationActionTypeDefault
@@ -131,8 +111,6 @@ func normalizeDictationAction(action dictationAction) dictationAction {
 	action.Name = strings.TrimSpace(action.Name)
 	action.Hotkey = strings.TrimSpace(action.Hotkey)
 	action.Output = normalizeDictationActionOutput(action.Output)
-	action.Model = strings.TrimSpace(action.Model)
-	action.Prompt = strings.TrimSpace(action.Prompt)
 	return action
 }
 
@@ -149,20 +127,7 @@ func normalizeDictationActionOutput(output string) string {
 	switch strings.TrimSpace(output) {
 	case dictationActionOutputOverlay:
 		return dictationActionOutputOverlay
-	case dictationActionOutputChat:
-		return dictationActionOutputChat
 	default:
 		return dictationActionOutputInput
 	}
-}
-
-func actionNeedsSelectedText(action dictationAction) bool {
-	return strings.Contains(action.Prompt, dictationVariableSelectedText)
-}
-
-func renderDictationActionPrompt(action dictationAction, dictationText string, inputContext dictationActionInputContext) string {
-	prompt := action.Prompt
-	prompt = strings.ReplaceAll(prompt, dictationVariableText, dictationText)
-	prompt = strings.ReplaceAll(prompt, dictationVariableSelectedText, inputContext.SelectedText)
-	return strings.TrimSpace(prompt)
 }

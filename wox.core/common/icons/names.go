@@ -23,7 +23,6 @@ const (
 	PluginTheme         = "plugin.theme"
 	PluginUrl           = "plugin.url"
 	PluginWPM           = "plugin.wpm"
-	PluginAIChat        = "plugin.ai-chat"
 	PluginMediaPlayer   = "plugin.mediaplayer"
 	PluginEmoji         = "plugin.emoji"
 	PluginInstaller     = "plugin.installer"

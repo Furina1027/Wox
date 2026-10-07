@@ -186,7 +186,6 @@ func queryVariableChipLabel(token string, translate func(string) string) string 
 // queryVariableChipOptions is the union of picker sets used to label known environment tokens.
 func queryVariableChipOptions() []queryHotkeyVariable {
 	options := append([]queryHotkeyVariable{}, queryHotkeyVariables...)
-	options = append(options, aiCommandPromptVariables...)
 	options = append(options, dictationPromptVariables...)
 	options = append(options, webSearchQueryVariables...)
 	return options

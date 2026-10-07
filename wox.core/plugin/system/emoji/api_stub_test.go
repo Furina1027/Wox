@@ -73,10 +73,6 @@ func (s *stubAPI) OnDragOut(ctx context.Context, option plugin.DragOutListenOpti
 
 func (s *stubAPI) RegisterQueryCommands(ctx context.Context, commands []plugin.MetadataCommand) {}
 
-func (s *stubAPI) AIChatStream(ctx context.Context, model common.Model, conversations []common.Conversation, options common.ChatOptions, callback common.ChatStreamFunc) error {
-	return nil
-}
-
 func (s *stubAPI) OnMRURestore(ctx context.Context, callback func(context.Context, plugin.MRUData) (*plugin.QueryResult, error)) {
 }
 

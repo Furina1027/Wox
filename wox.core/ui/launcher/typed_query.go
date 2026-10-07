@@ -258,7 +258,7 @@ func fromCoreResultAction(action plugin.QueryResultActionUI) resultAction {
 }
 
 func fromCoreQueryLayout(layout plugin.QueryLayout) queryLayout {
-	converted := queryLayout{ResultPreviewWidthRatio: layout.ResultPreviewWidthRatio, ChatMode: layout.ChatMode}
+	converted := queryLayout{ResultPreviewWidthRatio: layout.ResultPreviewWidthRatio}
 	if layout.Icon != nil {
 		converted.Icon = fromCoreImage(*layout.Icon)
 	}
@@ -315,8 +315,6 @@ func fromCoreFormDefinition(item definition.PluginSettingDefinitionItem) (formDe
 		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip}
 	case *definition.PluginSettingValueSelect:
 		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, Suffix: value.Suffix, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip, IsMulti: value.IsMulti, Options: fromCoreSelectOptions(value.Options), Validators: fromCoreValidators(value.Validators)}
-	case *definition.PluginSettingValueSelectAIModel:
-		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, Suffix: value.Suffix, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip, Validators: fromCoreValidators(value.Validators)}
 	case *definition.PluginSettingValueLabel:
 		converted.Value = formDefinitionValue{Content: value.Content, Tooltip: value.Tooltip}
 	case *definition.PluginSettingValueTable:

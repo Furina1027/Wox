@@ -17,7 +17,7 @@ func NewTestLogger(testLocation *TestLocation) *TestLogger {
 	// Create logger with test log directory
 	logFolder := testLocation.GetLogDirectory()
 	logger := util.CreateLogger(logFolder)
-	
+
 	return &TestLogger{
 		Log:          logger,
 		testLocation: testLocation,

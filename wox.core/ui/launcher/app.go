@@ -34,7 +34,6 @@ const (
 	launcherWindowID   woxui.WindowID = "wox.launcher"
 	settingsWindowID   woxui.WindowID = "wox.settings"
 	onboardingWindowID woxui.WindowID = "wox.onboarding"
-	chatWindowID       woxui.WindowID = "wox.chat"
 )
 
 // App owns one launcher window and its typed core service boundary.
@@ -71,14 +70,12 @@ type App struct {
 	launcher       *woxui.ManagedWindow
 	settingsView   *woxui.ManagedWindow
 	onboardingView *woxui.ManagedWindow
-	chatView       *woxui.ManagedWindow
 	noteWindows    map[string]*notesWindowController
 	activeNote     *notesWindowController
 	window         *woxui.Window
 	host           *woxwidget.Host
 	settingsHost   *woxwidget.Host
 	onboardingHost *woxwidget.Host
-	chatHost       *woxwidget.Host
 
 	query             plainQuery
 	queryContext      queryContext
@@ -131,16 +128,16 @@ type App struct {
 	requirementForm            *requirementFormState
 	launcherTableEditor        *formTableEditorState
 	triggerConflict            *triggerConflictPreviewState
-	chatPreview                *chatPreviewState
 	webViewPreviewData         string
 	webViewPreviewError        string
 	webViewNavigation          woxui.WebViewNavigationState
+	// modelManager owns the local dictation and OCR model download/delete overlay session.
+	modelManager *modelManagerState
 	// Native Office preview state separates selected, delayed, and reported handler generations.
 	nativeFilePreviewPath        string
 	nativeFilePreviewPendingPath string
 	nativeFilePreviewManualPath  string
 	nativeFilePreviewError       string
-	chatFullscreen               bool
 	webViewFullscreen            bool
 	webViewFullscreenResultID    string
 	webViewFullscreenRestore     queryPreview
@@ -153,13 +150,6 @@ type App struct {
 	// keepQueryFocusOnWebViewActivate skips page focus when a hotkey show restores
 	// an existing WebView result and has already selected the query box.
 	keepQueryFocusOnWebViewActivate bool
-	chatWindowFocused               bool
-	chatWindowMaximized             bool
-	chatWindowRestoreFrame          woxui.Rect
-	chatWindowGeneration            uint64
-	chatImportQueue                 []chatAttachmentImportJob
-	chatImportRunning               bool
-	chatImportEpoch                 uint64
 	terminalFullscreen              bool
 	actionPanel                     bool
 	actionPanelPurpose              actionPanelPurpose
@@ -226,7 +216,6 @@ type App struct {
 	runtimeSettings      *runtimeSettingsController
 	themeSettings        *themeSettingsController
 	pluginSettings       *pluginSettingsController
-	aiSettings           *aiSettingsController
 	usageSettings        *usageSettingsController
 	updateSettings       *updateSettingsController
 	privacySettings      *privacySettingsController
@@ -284,7 +273,6 @@ type App struct {
 	nativeFilePreviewOcclusion                woxui.Rect
 	nativeFilePreviewReportedOcclusion        woxui.Rect
 	mdDocs                                    map[string]woxcomponent.MarkdownDocument
-	chatMarkdown                              chatMarkdownCache
 	terminalLayout                            textLayoutCache
 	previewLayouts                            map[string]*textLayoutCache
 	dictationAudio                            *dictationPreviewAudioState
@@ -394,7 +382,6 @@ func newApp(isDev bool, services contract.Services, windows *woxui.WindowManager
 	app.runtimeSettings = newRuntimeSettingsController(deps)
 	app.themeSettings = newThemeSettingsController(deps)
 	app.pluginSettings = newPluginSettingsController(deps)
-	app.aiSettings = newAISettingsController(deps)
 	app.usageSettings = newUsageSettingsController(deps)
 	app.updateSettings = newUpdateSettingsController(deps)
 	app.privacySettings = newPrivacySettingsController(deps)
@@ -527,9 +514,6 @@ func (a *App) start() error {
 // Close releases the protocol connection after the final native window closes.
 func (a *App) Close() error {
 	if !a.isPrimary {
-		if err := a.closeChatWindow(); err != nil {
-			return err
-		}
 		var launcher *woxui.ManagedWindow
 		if err := a.runOnUI("resolve secondary launcher for close", func() {
 			launcher = a.launcher
@@ -709,7 +693,6 @@ func (a *App) hideWindow(notify bool) error {
 		a.reconcileSelectedPreview()
 		a.requirementForm = nil
 		a.triggerConflict = nil
-		a.resetChatPreview()
 		a.clearWebViewPreviewModeLocked()
 		if launcher != nil {
 			hideErr = launcher.Hide()
@@ -834,7 +817,7 @@ func (a *App) onFocus(event woxui.FocusEvent) {
 	hideOnBlur := a.show.HideOnBlur
 	launcher := a.launcher
 	// A pop-out still uses this session's services after the launcher loses focus.
-	retainSecondary := a.isPrimary || a.chatWindowOpen() || a.hasCacheableWebViewPreviewLocked()
+	retainSecondary := a.isPrimary || a.hasCacheableWebViewPreviewLocked()
 	var lastX, lastY int
 	saveLast := false
 	if hideOnBlur && a.isPrimary && a.show.RememberPosition {
@@ -858,7 +841,6 @@ func (a *App) onFocus(event woxui.FocusEvent) {
 		if launcher != nil {
 			_ = launcher.Hide()
 		}
-		a.resetChatPreview()
 		a.clearWebViewPreviewModeLocked()
 	}
 	if saveLast {
@@ -987,7 +969,6 @@ func (a *App) replaceQuery(query plainQuery, rememberPrevious bool) {
 	a.reconcileSelectedPreview()
 	a.requirementForm = nil
 	a.triggerConflict = nil
-	a.resetChatPreview()
 	a.clearWebViewPreviewModeLocked()
 	a.restoreQueryTextInput()
 	if rememberPrevious {
@@ -1087,7 +1068,6 @@ func (a *App) requestMRU() error {
 		a.reconcileSelectedPreview()
 		a.requirementForm = nil
 		a.triggerConflict = nil
-		a.resetChatPreview()
 		a.clearWebViewPreviewModeLocked()
 	}); err != nil {
 		return err
@@ -1123,13 +1103,9 @@ func (a *App) applyResults(queryID string, results []queryResult, layout *queryL
 	a.resultsQueryID = queryID
 	a.queryComplete = complete
 	a.hoveredResult = -1
-	enterChatMode := layout != nil && layout.ChatMode
 	a.clearWebViewPreviewModeLocked()
 	if layout != nil {
 		a.layout = *layout
-		if !layout.ChatMode {
-			a.chatFullscreen = false
-		}
 	}
 	if refinements != nil {
 		a.applyRefinementsLocked(*refinements)
@@ -1160,9 +1136,6 @@ func (a *App) applyResults(queryID string, results []queryResult, layout *queryL
 		a.normalizeActionSelectionLocked()
 	}
 	a.reconcileSelectedPreview()
-	if enterChatMode {
-		a.enterChatMode()
-	}
 	if closedActionPanel {
 		a.restoreQueryTextInput()
 	}
@@ -1222,7 +1195,7 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 		controls := woxui.TitleBarControls{}
 		snapshot := viewSnapshot{
 			show: a.show, results: a.results, selected: a.selected, layout: a.selectedPreviewLayout(),
-			chatFullscreen: a.chatFullscreen, webViewFullscreen: a.webViewFullscreen, terminalFullscreen: a.terminalFullscreen,
+			webViewFullscreen: a.webViewFullscreen, terminalFullscreen: a.terminalFullscreen,
 		}
 		if launcherPreviewTitleBarVisible(snapshot) {
 			controls = woxui.TitleBarControls{Height: launcherview.SettingsTitleBarHeight, Close: true}
@@ -1245,7 +1218,6 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 		formHeight = int(densityMetrics.scaled(formContentMaximumHeight) + 2*densityMetrics.scaled(10))
 	}
 	toolbarMessageVisible := a.effectiveToolbarMessage() != nil
-	chatFullscreen := a.chatFullscreen
 	previewFullscreen := a.isPreviewFullscreen()
 	actionListHeight := 0
 	if actionPanel {
@@ -1289,7 +1261,7 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 		resultBottomInset = int(palette.appPadding.Bottom)
 	}
 	toolbarHasContent := launcherToolbarHasContent(resultCount, toolbarMessageVisible, a.actionPanel)
-	toolbarHeightIncluded := launcherToolbarHeightIncluded(params.HideToolbar, toolbarHasContent, previewFullscreen, chatFullscreen || a.webViewFullscreen)
+	toolbarHeightIncluded := launcherToolbarHeightIncluded(params.HideToolbar, toolbarHasContent, previewFullscreen)
 	height := 0
 	if !params.HideQueryBox {
 		height += queryAreaHeight
@@ -1478,9 +1450,9 @@ func launcherToolbarHasContent(resultCount int, messageVisible, panelOpen bool) 
 	return resultCount > 0 || messageVisible || panelOpen
 }
 
-// launcherToolbarHeightIncluded preserves the hidden toolbar's space only in Flutter's chat mode.
-func launcherToolbarHeightIncluded(hideToolbar, hasContent, previewFullscreen, chatFullscreen bool) bool {
-	return !hideToolbar && hasContent && (!previewFullscreen || chatFullscreen)
+// launcherToolbarHeightIncluded keeps the toolbar out of fullscreen preview layouts.
+func launcherToolbarHeightIncluded(hideToolbar, hasContent, previewFullscreen bool) bool {
+	return !hideToolbar && hasContent && !previewFullscreen
 }
 
 // launcherWindowOrigin keeps user-moved windows in place while preserving a bottom query box during height changes.
@@ -1613,9 +1585,6 @@ func (a *App) onKey(event woxui.KeyEvent) bool {
 		return true
 	}
 	if a.onTriggerConflictPreviewKey(event) {
-		return true
-	}
-	if a.onChatPreviewKey(event) {
 		return true
 	}
 	if a.onWebViewPreviewModeKey(event) {
@@ -1874,9 +1843,6 @@ func (a *App) onTextInput(event woxui.TextInputEvent) {
 	if a.onTriggerConflictPreviewTextInput(event) {
 		return
 	}
-	if a.onChatPreviewTextInput(event) {
-		return
-	}
 	if a.onTerminalPreviewTextInput(event) {
 		return
 	}
@@ -1941,7 +1907,6 @@ func (a *App) moveSelection(delta int) {
 		a.selected = target
 		a.resultScrollDetached = false
 		a.clearActionPanelStateLocked()
-		a.chatFullscreen = false
 		a.clearWebViewPreviewModeLocked()
 		a.reconcileSelectedPreview()
 		a.restoreQueryTextInput()
@@ -1966,7 +1931,6 @@ func (a *App) moveSelectionByGroup(direction int) {
 		a.selected = target
 		a.resultScrollDetached = false
 		a.clearActionPanelStateLocked()
-		a.chatFullscreen = false
 		a.clearWebViewPreviewModeLocked()
 		a.reconcileSelectedPreview()
 		a.restoreQueryTextInput()
@@ -1989,7 +1953,6 @@ func (a *App) selectResult(index int) {
 		a.form = nil
 		if changed {
 			a.resultScrollDetached = false
-			a.chatFullscreen = false
 			a.clearWebViewPreviewModeLocked()
 		}
 	}
@@ -2339,7 +2302,6 @@ type queryLayout struct {
 	ScopeIcons              []woxImage  `json:"ScopeIcons,omitempty"`
 	ResultPreviewWidthRatio *float64    `json:"ResultPreviewWidthRatio"`
 	GridLayout              *gridLayout `json:"GridLayout"`
-	ChatMode                bool        `json:"ChatMode"`
 }
 
 type gridLayout struct {

@@ -42,16 +42,12 @@ type WoxSetting struct {
 	ShowPosition   *WoxSettingValue[PositionType]
 	// ShowDisplay is the monitor chosen for PositionTypeSpecificScreen.
 	// Display ids belong to this machine, so the value stays local.
-	ShowDisplay            *WoxSettingValue[ShowDisplayTarget]
-	AIProviders            *WoxSettingValue[[]AIProvider]
-	AIMCPServers           *WoxSettingValue[[]common.AIChatMCPServerConfig]
-	AISkills               *WoxSettingValue[[]common.Skill]
-	AIDisabledBuiltinTools *WoxSettingValue[[]string]
-	EnableAutoBackup       *WoxSettingValue[bool]
-	EnableAutoUpdate       *WoxSettingValue[bool]
-	ReleaseChannel         *WoxSettingValue[ReleaseChannel]
-	CustomPythonPath       *PlatformValue[string]
-	CustomNodejsPath       *PlatformValue[string]
+	ShowDisplay      *WoxSettingValue[ShowDisplayTarget]
+	EnableAutoBackup *WoxSettingValue[bool]
+	EnableAutoUpdate *WoxSettingValue[bool]
+	ReleaseChannel   *WoxSettingValue[ReleaseChannel]
+	CustomPythonPath *PlatformValue[string]
+	CustomNodejsPath *PlatformValue[string]
 
 	// CloudSyncServerUrl is a local-only development override. It must not be
 	// synced because each device may target a different test server.
@@ -245,36 +241,6 @@ func (q *QueryAlias) HasPlaceholder() bool {
 
 func (q *QueryAlias) PlaceholderCount() int {
 	return len(regexp.MustCompile(`(?m){\d}`).FindAllString(q.Query, -1))
-}
-
-type AIProvider struct {
-	Name            common.ProviderName // see ai.ProviderName
-	Alias           string              // optional, used to distinguish multiple configs for the same provider
-	ApiKey          string
-	Host            string
-	Executable      string `json:",omitempty"` // Optional installed CLI path; empty uses executable discovery.
-	ReasoningEffort string `json:",omitempty"` // Empty preserves the installed provider's model default.
-}
-
-const (
-	DefaultAIWebSearchResultCount        = 5
-	MaxAIWebSearchResultCount            = 10
-	DefaultAIWebSearchFetchMaxCharacters = 12000
-	MaxAIWebSearchFetchMaxCharacters     = 50000
-	DefaultAIWebSearchExaEndpoint        = "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa"
-)
-
-func normalizeAIWebSearchInt(value int, defaultValue int, minValue int, maxValue int) int {
-	if value <= 0 {
-		return defaultValue
-	}
-	if value < minValue {
-		return minValue
-	}
-	if value > maxValue {
-		return maxValue
-	}
-	return value
 }
 
 type QueryHotkey struct {
@@ -494,11 +460,6 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		QueryHotkeys:                       NewPlatformValue(store, "QueryHotkeys", []QueryHotkey{}, []QueryHotkey{}, []QueryHotkey{}),
 		ResultBindings:                     NewPlatformValue(store, "ResultBindings", []ResultBinding{}, []ResultBinding{}, []ResultBinding{}),
 		QueryAliases:                       NewWoxSettingValue(store, "QueryAliases", []QueryAlias{}),
-		TrayQueries:                        NewWoxSettingValue(store, "TrayQueries", []TrayQuery{}),
-		AIProviders:                        NewWoxSettingValue(store, "AIProviders", []AIProvider{}),
-		AIMCPServers:                       NewWoxSettingValue(store, "AIMCPServers", []common.AIChatMCPServerConfig{}),
-		AISkills:                           NewWoxSettingValue(store, "AISkills", []common.Skill{}),
-		AIDisabledBuiltinTools:             NewWoxSettingValue(store, "AIDisabledBuiltinTools", []string{}),
 		QueryHistories:                     NewWoxSettingValue(store, "QueryHistories", []QueryHistory{}),
 		QueryCompletionFeedbacks:           NewWoxSettingValue(store, "QueryCompletionFeedback", []QueryCompletionFeedback{}),
 		PinedResults:                       NewWoxSettingValue(store, "PinedResults", util.NewHashMap[ResultHash, bool]()),

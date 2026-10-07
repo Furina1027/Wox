@@ -11,6 +11,24 @@ import (
 	"wox/plugin"
 )
 
+// folderTestAPI satisfies the settings and logging surface FolderPlugin touches.
+type folderTestAPI struct {
+	plugin.API
+	changed common.PlainQuery
+}
+
+func (folderTestAPI) GetSetting(context.Context, string) string              { return "" }
+func (folderTestAPI) GetTranslation(context.Context, string) string          { return "" }
+func (folderTestAPI) Log(context.Context, plugin.LogLevel, string)           {}
+func (folderTestAPI) Notify(context.Context, string)                         {}
+func (folderTestAPI) ShowApp(context.Context)                                {}
+func (folderTestAPI) HideApp(context.Context)                                {}
+func (folderTestAPI) RefreshQuery(context.Context, plugin.RefreshQueryParam) {}
+
+func (a *folderTestAPI) ChangeQuery(_ context.Context, query common.PlainQuery) {
+	a.changed = query
+}
+
 func TestFolderActionsExposeStableIDs(t *testing.T) {
 	folderPlugin := &FolderPlugin{}
 
@@ -65,7 +83,7 @@ func TestFolderCopyNamePrefersTitleAndVolumeRoot(t *testing.T) {
 func TestFolderShiftEnterNavigation(t *testing.T) {
 	root := t.TempDir()
 	volumeRoot := filepath.VolumeName(root) + string(os.PathSeparator)
-	api := &chatTestAPI{}
+	api := &folderTestAPI{}
 	p := &FolderPlugin{api: api}
 	for _, test := range []struct {
 		name    string
@@ -269,7 +287,7 @@ func TestFolderQueryListsParentDirectoryFirst(t *testing.T) {
 		t.Fatalf("write notes: %v", err)
 	}
 
-	api := &chatTestAPI{}
+	api := &folderTestAPI{}
 	folderPlugin := &FolderPlugin{api: api}
 	response := folderPlugin.Query(t.Context(), plugin.Query{
 		Type:   plugin.QueryTypeInput,

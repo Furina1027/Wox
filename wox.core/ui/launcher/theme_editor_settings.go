@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 	"wox/common"
-	"wox/common/icons"
 
 	"github.com/disintegration/imaging"
 	woxcomponent "wox/ui/launcher/component"
@@ -108,21 +107,12 @@ func (a *App) buildThemeEditorSettingsSurface(state *themeEditorPreviewSnapshot,
 		geometry = &woxcomponent.LauncherDemoGeometry{AppPadding: draftPalette.appPadding, ResultPadding: draftPalette.resultContainerPadding, ItemPadding: draftPalette.resultItemPadding, ActionPadding: draftPalette.actionPadding, ToolbarPadding: draftPalette.toolbarPadding, ActionQueryRadius: draftPalette.actionQueryRadius}
 	}
 
-	assistantWidth, assistantHeight := launcherview.ThemeEditorInspectorSize(width, height, formError != "")
 	dirty := themeEditorSnapshotDirty(state)
 	return launcherview.ThemeEditorSettingsView(launcherview.ThemeEditorSettingsProps{
 		Width: width, Height: height, Theme: palette, DraftTheme: draftPalette.componentTheme(),
 		Geometry:  geometry,
-		ModeLabel: a.translate("i18n:ui_theme_editor_properties"), AILabel: a.translate("i18n:ui_theme_editor_ai"),
-		AIIcon: a.imageForTint(fromCoreImage(icons.Get(icons.ControlSparkles)), &palette.Text, physicalImageSize(16, imageScale)),
-		OnSelectAI: func(open bool) {
-			if current := a.themeSettings.ThemeEditor(); current != nil && current.ai.open != open {
-				a.toggleThemeEditorAI()
-			}
-		},
-		AIAssistant: a.buildThemeEditorAI(state, palette, assistantWidth, assistantHeight, imageScale),
-		AIExpanded:  state.ai.open,
-		Key:         state.key, Title: state.sourceName,
+		ModeLabel: a.translate("i18n:ui_theme_editor_properties"),
+		Key:       state.key, Title: state.sourceName,
 		DefaultLabel: a.translate("i18n:ui_theme_inherited"), ResetLabel: a.translate("i18n:ui_theme_restore_default"),
 		LinkPaddingLabel: a.translate("i18n:ui_theme_editor_link_padding"), PaddingLabel: a.translate("i18n:ui_theme_editor_padding"),
 		NoPropertiesLabel: a.translate("i18n:ui_theme_editor_no_properties"),
@@ -130,7 +120,7 @@ func (a *App) buildThemeEditorSettingsSurface(state *themeEditorPreviewSnapshot,
 		OpacityLabel:   a.translate("i18n:ui_theme_editor_background_opacity"),
 		OnChangeToken:  a.changeThemeEditorToken,
 		OnChangeTokens: a.changeThemeEditorTokens,
-		Groups:         groups, ActiveGroup: state.activeGroup, Dirty: dirty, Saving: state.saving, AIBusy: state.ai.busy, CanOverwrite: !state.isSystem && !state.isAuto && state.sourceID != "", Error: formError,
+		Groups:         groups, ActiveGroup: state.activeGroup, Dirty: dirty, Saving: state.saving, CanOverwrite: !state.isSystem && !state.isAuto && state.sourceID != "", Error: formError,
 		Wallpaper: wallpaperImage, WallpaperBlurred: wallpaperBlurred,
 		FlashToken: state.flashToken, DialogToken: state.dialogToken,
 		LocateIcon: locateIcon, DiscardIcon: discardIcon, OverwriteIcon: overwriteIcon, SaveAsIcon: saveAsIcon,
@@ -737,8 +727,6 @@ func (a *App) discardThemeEditorDraft() {
 	}
 	definitions := append([]formDefinition(nil), state.definitions...)
 	state.formFieldsState = newFormFieldsState(definitions, state.initial, false)
-	state.ai.undo = nil
-	state.ai.history = nil
 	state.dialogMode = ""
 	state.dialogToken = ""
 	state.dialogOriginal = ""

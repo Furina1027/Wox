@@ -11,8 +11,8 @@ func TestFilterableSettingChoiceLeavesPrintableKeysForTextInput(t *testing.T) {
 	shared := newSharedEditState()
 	app := &App{
 		generalSettings: newGeneralSettingsController(deps, shared),
-		aiSettings:      newAISettingsController(deps),
-		cloudSettings:   newCloudSettingsController(deps),
+
+		cloudSettings: newCloudSettingsController(deps),
 	}
 	app.generalSettings.SetChoicePicker(&settingChoicePickerState{item: settingItem{filterable: true}})
 
@@ -29,8 +29,8 @@ func TestPlainSettingChoiceStillTrapsUnhandledKeys(t *testing.T) {
 	shared := newSharedEditState()
 	app := &App{
 		generalSettings: newGeneralSettingsController(deps, shared),
-		aiSettings:      newAISettingsController(deps),
-		cloudSettings:   newCloudSettingsController(deps),
+
+		cloudSettings: newCloudSettingsController(deps),
 	}
 	app.generalSettings.SetChoicePicker(&settingChoicePickerState{item: settingItem{filterable: false}})
 

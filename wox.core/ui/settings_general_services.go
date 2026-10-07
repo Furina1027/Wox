@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 
-	"wox/ai"
 	"wox/common"
 	corehotkey "wox/hotkey"
 	"wox/i18n"
@@ -28,10 +27,6 @@ import (
 func (s *CoreServices) GeneralSettings(ctx context.Context, sessionID string) (contract.GeneralSettings, error) {
 	ctx = uiServiceContext(ctx, sessionID)
 	woxSetting := setting.GetSettingManager().GetWoxSetting(ctx)
-	skills := woxSetting.AISkills.Get()
-	if chater := plugin.GetPluginManager().GetAIChatPluginChater(ctx); chater != nil {
-		skills = chater.GetAllSkills(ctx)
-	}
 	return contract.GeneralSettings{
 		EnableAutostart:                    woxSetting.EnableAutostart.Get(),
 		MainHotkey:                         woxSetting.MainHotkey.Get(),
@@ -56,11 +51,6 @@ func (s *CoreServices) GeneralSettings(ctx context.Context, sessionID string) (c
 		TrayQueries:                        append([]setting.TrayQuery(nil), woxSetting.TrayQueries.Get()...),
 		LaunchMode:                         woxSetting.LaunchMode.Get(),
 		StartPage:                          woxSetting.StartPage.Get(),
-		AIProviders:                        append([]setting.AIProvider(nil), woxSetting.AIProviders.Get()...),
-		AIMCPServers:                       append([]common.AIChatMCPServerConfig(nil), woxSetting.AIMCPServers.Get()...),
-		AISkills:                           append([]common.Skill(nil), skills...),
-		AIDisabledBuiltinTools:             append([]string(nil), woxSetting.AIDisabledBuiltinTools.Get()...),
-		AIConfigurableBuiltinTools:         ai.ConfigurableBuiltinToolInfos(),
 		HTTPProxyEnabled:                   woxSetting.HttpProxyEnabled.Get(),
 		HTTPProxyURL:                       woxSetting.HttpProxyUrl.Get(),
 		ShowPosition:                       woxSetting.ShowPosition.Get(),
@@ -268,30 +258,6 @@ func (s *CoreServices) UpdateGeneralSetting(ctx context.Context, sessionID strin
 			return err
 		}
 		woxSetting.ShowDisplay.Set(target)
-	case "AIProviders":
-		var providers []setting.AIProvider
-		if err := json.Unmarshal([]byte(value), &providers); err != nil {
-			return err
-		}
-		woxSetting.AIProviders.Set(providers)
-	case "AIMCPServers":
-		var servers []common.AIChatMCPServerConfig
-		if err := json.Unmarshal([]byte(value), &servers); err != nil {
-			return err
-		}
-		woxSetting.AIMCPServers.Set(servers)
-	case "AISkills":
-		var skills []common.Skill
-		if err := json.Unmarshal([]byte(value), &skills); err != nil {
-			return err
-		}
-		woxSetting.AISkills.Set(ai.SanitizeUserSkills(skills))
-	case "AIDisabledBuiltinTools":
-		var names []string
-		if err := json.Unmarshal([]byte(value), &names); err != nil {
-			return err
-		}
-		woxSetting.AIDisabledBuiltinTools.Set(ai.SanitizeDisabledBuiltinTools(names))
 	case "EnableAutoBackup":
 		woxSetting.EnableAutoBackup.Set(boolValue)
 	case "EnableAutoUpdate":

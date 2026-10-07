@@ -17,7 +17,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"wox/ai"
 	"wox/analytics"
 	"wox/common"
 	"wox/common/icons"
@@ -184,7 +183,6 @@ type Manager struct {
 
 	debounceQueryTimer *util.HashMap[string, *debounceTimer]
 	autoQueryHistory   *autoQueryHistoryRecorder
-	aiProviders        *util.HashMap[string, ai.Provider]
 
 	activeBrowserUrl string //active browser url before wox is activated
 
@@ -257,7 +255,6 @@ func GetPluginManager() *Manager {
 			autoQueryHistory: newAutoQueryHistoryRecorder(autoRecordQueryHistoryDelay, func(ctx context.Context, query common.PlainQuery) {
 				setting.GetSettingManager().AddQueryHistory(ctx, query)
 			}),
-			aiProviders:                 util.NewHashMap[string, ai.Provider](),
 			scriptReloadTimers:          util.NewHashMap[string, *time.Timer](),
 			singleFileReloadTimers:      util.NewHashMap[string, *time.Timer](),
 			singleFileWatchIgnored:      util.NewHashMap[string, int64](),
@@ -707,9 +704,6 @@ func (m *Manager) DisablePlugin(ctx context.Context, pluginId string) error {
 		return err
 	}
 	m.deactivatePlugin(ctx, pluginInstance)
-	if m.ui != nil {
-		m.ui.ReloadChatResources(ctx, "mentions")
-	}
 	if strings.EqualFold(pluginId, AttentionPluginID) {
 		// Hide the query-box unread badge as soon as the inbox plugin is turned off.
 		PublishAttentionUnreadCount(ctx)
@@ -730,9 +724,6 @@ func (m *Manager) EnablePlugin(ctx context.Context, pluginId string) error {
 	if err := m.activatePlugin(ctx, pluginInstance); err != nil {
 		_ = pluginInstance.Setting.Disabled.Set(true)
 		return err
-	}
-	if m.ui != nil {
-		m.ui.ReloadChatResources(ctx, "mentions")
 	}
 	if strings.EqualFold(pluginId, AttentionPluginID) {
 		PublishAttentionUnreadCount(ctx)
@@ -1444,10 +1435,6 @@ func (m *Manager) mergeQueryLayouts(metadataLayout QueryLayout, responseLayout Q
 	if responseLayout.GridLayout != nil {
 		merged.GridLayout = responseLayout.GridLayout
 	}
-	if responseLayout.ChatMode {
-		merged.ChatMode = true
-	}
-
 	return merged
 }
 
@@ -2932,7 +2919,7 @@ func shouldWrapRemotePreview(preview WoxPreview) bool {
 		return false
 	}
 	switch preview.PreviewType {
-	case WoxPreviewTypeRemote, WoxPreviewTypeQueryRequirementSettings, WoxPreviewTypeTriggerKeywordConflict, WoxPreviewTypeMedia, WoxPreviewTypeChat, WoxPreviewTypeTerminal:
+	case WoxPreviewTypeRemote, WoxPreviewTypeQueryRequirementSettings, WoxPreviewTypeTriggerKeywordConflict, WoxPreviewTypeMedia, WoxPreviewTypeTerminal:
 		return false
 	default:
 		return true
@@ -5006,67 +4993,6 @@ func (m *Manager) EnsureHostStarted(ctx context.Context, runtime Runtime) error 
 	}
 
 	return nil
-}
-
-func (m *Manager) IsTriggerKeywordAIChat(ctx context.Context, triggerKeyword string) bool {
-	aiChatPluginInstance := m.GetAIChatPluginInstance(ctx)
-	if aiChatPluginInstance == nil {
-		return false
-	}
-
-	return lo.Contains(aiChatPluginInstance.GetTriggerKeywords(), triggerKeyword)
-}
-
-func (m *Manager) GetAIChatPluginInstance(ctx context.Context) *Instance {
-	aiChatPlugin := m.GetPluginInstances()
-	aiChatPluginInstance, exist := lo.Find(aiChatPlugin, func(item *Instance) bool {
-		return item.Metadata.Id == common.AIChatPluginID
-	})
-	if exist {
-		return aiChatPluginInstance
-	}
-
-	return nil
-}
-
-func (m *Manager) GetAIChatPluginChater(ctx context.Context) common.AIChater {
-	aiChatPluginInstance := m.GetAIChatPluginInstance(ctx)
-	if aiChatPluginInstance == nil {
-		return nil
-	}
-
-	chater, ok := aiChatPluginInstance.Plugin.(common.AIChater)
-	if ok {
-		return chater
-	}
-
-	return nil
-}
-
-func (m *Manager) GetAIProvider(ctx context.Context, provider common.ProviderName, alias string) (ai.Provider, error) {
-	key := string(provider)
-	if alias != "" {
-		key = fmt.Sprintf("%s_%s", provider, alias)
-	}
-	if v, exist := m.aiProviders.Load(key); exist {
-		return v, nil
-	}
-
-	//check if provider has setting
-	aiProviderSettings := setting.GetSettingManager().GetWoxSetting(ctx).AIProviders.Get()
-	providerSetting, providerSettingExist := lo.Find(aiProviderSettings, func(item setting.AIProvider) bool {
-		return item.Name == provider && item.Alias == alias
-	})
-	if !providerSettingExist {
-		return nil, fmt.Errorf("ai provider setting not found: %s (alias=%s)", provider, alias)
-	}
-
-	newProvider, newProviderErr := ai.NewProvider(ctx, providerSetting)
-	if newProviderErr != nil {
-		return nil, newProviderErr
-	}
-	m.aiProviders.Store(key, newProvider)
-	return newProvider, nil
 }
 
 func (m *Manager) ExecutePluginDeeplink(ctx context.Context, pluginId string, arguments map[string]string) {

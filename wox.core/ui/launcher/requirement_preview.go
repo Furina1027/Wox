@@ -55,13 +55,6 @@ type requirementFormSnapshot struct {
 	saving      bool
 	error       string
 	fieldErrors map[string]string
-	modelsError string
-}
-
-type aiModel struct {
-	Name          string `json:"Name"`
-	Provider      string `json:"Provider"`
-	ProviderAlias string `json:"ProviderAlias"`
 }
 
 // buildRequirementPreview adapts requirement state and form rows to the pure preview view.
@@ -69,10 +62,6 @@ func (a *App) buildRequirementPreview(result queryResult, preview queryPreview, 
 	form, err := a.requirementFormSnapshotFor(result, preview)
 	if err != nil {
 		return previewview.RequirementPreviewView(previewview.RequirementPreviewProps{Width: width, Height: height, Theme: palette.componentTheme(), FatalError: err.Error()})
-	}
-	errorMessage := form.error
-	if errorMessage == "" && form.modelsError != "" && hasFormDefinitionType(form.definitions, "selectAIModel") {
-		errorMessage = "Unable to load AI models: " + form.modelsError
 	}
 	callbacks := formFieldCallbacks{
 		idPrefix: "requirement-form", focus: a.focusRequirementFormField, change: a.changeRequirementFormChoice,
@@ -85,7 +74,7 @@ func (a *App) buildRequirementPreview(result queryResult, preview queryPreview, 
 	}
 	return previewview.RequirementPreviewView(previewview.RequirementPreviewProps{
 		Width: width, Height: height, Theme: palette.componentTheme(), Title: form.title, Message: form.message, PluginName: form.pluginName,
-		Error: errorMessage, SaveLabel: requirementSaveLabel(a.translate), Saving: form.saving, Rows: rows,
+		Error: form.error, SaveLabel: requirementSaveLabel(a.translate), Saving: form.saving, Rows: rows,
 		KeepVisibleKey: formFieldsKeepVisibleKey("requirement-form", form.formFieldsSnapshot),
 		OnSubmit:       a.submitRequirementForm,
 		OnOpenLink:     a.openRequirementFormLink,
@@ -120,7 +109,7 @@ func requirementPreviewDataAndKey(result queryResult, preview queryPreview) (que
 	return data, fmt.Sprintf("%s|%s|%x", result.QueryID, result.ID, hash), nil
 }
 
-// activateRequirementPreview prepares form state and optional model data before rendering.
+// activateRequirementPreview prepares form state before rendering.
 func (a *App) activateRequirementPreview(result queryResult, preview queryPreview) error {
 	data, key, err := requirementPreviewDataAndKey(result, preview)
 	if err != nil {
@@ -142,17 +131,6 @@ func (a *App) activateRequirementPreview(result queryResult, preview queryPrevie
 			message:         data.Message,
 		}
 	}
-	if models := a.aiSettings.Models(); len(models) > 0 {
-		applyAIModelOptionsLocked(&a.requirementForm.formFieldsState, models)
-	}
-	requestModels := hasFormDefinitionType(a.requirementForm.definitions, "selectAIModel") && !a.aiSettings.ModelsLoaded() && !a.aiSettings.ModelsLoading()
-	if requestModels {
-		a.aiSettings.SetModelsLoading(true)
-	}
-
-	if requestModels {
-		util.Go(a.lifecycleCtx, "load AI models for requirement preview", a.loadAIModels)
-	}
 	return nil
 }
 
@@ -165,10 +143,10 @@ func (a *App) requirementFormSnapshotFor(result queryResult, preview queryPrevie
 	if a.requirementForm == nil || a.requirementForm.key != key {
 		return nil, fmt.Errorf("requirement settings are not ready")
 	}
-	return snapshotRequirementFormLocked(a.requirementForm, a.aiSettings.ModelsError()), nil
+	return snapshotRequirementFormLocked(a.requirementForm), nil
 }
 
-func snapshotRequirementFormLocked(state *requirementFormState, modelsError string) *requirementFormSnapshot {
+func snapshotRequirementFormLocked(state *requirementFormState) *requirementFormSnapshot {
 	if state == nil {
 		return nil
 	}
@@ -182,7 +160,6 @@ func snapshotRequirementFormLocked(state *requirementFormState, modelsError stri
 		saving:             state.saving,
 		error:              state.error,
 		fieldErrors:        cloneFormTableFieldErrors(state.fieldErrors),
-		modelsError:        modelsError,
 	}
 }
 
@@ -193,90 +170,6 @@ func hasFormDefinitionType(definitions []formDefinition, definitionType string) 
 		}
 	}
 	return false
-}
-
-// loadAIModels shares the core model catalog between requirement and plugin setting forms.
-// Delegates the fetch+sort+cache to the AI settings controller and applies the App-side side
-// effects (refreshing requirement/plugin/table row forms that consume selectAIModel options,
-// and resetting the chat-preview model panel selection) through the onLoaded callback so the
-// controller stays free of *App references.
-func (a *App) loadAIModels() {
-	a.aiSettings.LoadAIModels(context.Background(), a.services, a.sessionID, func(models []aiModel) {
-		if models == nil {
-			log.Printf("load AI models for requirement form: see controller error")
-			a.invalidateChatSurfaces()
-			return
-		}
-		if a.requirementForm != nil {
-			applyAIModelOptionsLocked(&a.requirementForm.formFieldsState, models)
-		}
-		if pluginForm := a.pluginSettings.Form(); pluginForm != nil {
-			applyAIModelOptionsLocked(&pluginForm.formFieldsState, models)
-		}
-		for _, tableEditor := range []*formTableEditorState{a.launcherTableEditor, a.settingsTableEditor} {
-			if tableEditor != nil && tableEditor.rowForm != nil {
-				applyAIModelOptionsLocked(tableEditor.rowForm, models)
-			}
-		}
-		if a.chatPreview != nil && (a.chatPreview.panel == "models" || a.chatPreview.panel == chatCommandPanel) {
-			a.chatPreview.panelSelected = 0
-			if a.chatPreview.panel == "models" {
-				for index, model := range models {
-					if model == a.chatPreview.chat.Model {
-						a.chatPreview.panelSelected = index
-						break
-					}
-				}
-			}
-			a.chatPreview.panelScroll = 0
-			a.chatPreview.panelViewport = 0
-		}
-		a.invalidateChatSurfaces()
-	})
-}
-
-// applyAIModelOptionsLocked materializes model structs as the JSON strings expected by plugin settings.
-func applyAIModelOptionsLocked(fields *formFieldsState, models []aiModel) {
-	for index := range fields.definitions {
-		definition := &fields.definitions[index]
-		if definition.Type != "selectAIModel" {
-			continue
-		}
-		options := make([]formOption, 0, len(models)+1)
-		current := fields.values[definition.Value.Key]
-		currentFound := current == ""
-		for _, model := range models {
-			encoded, err := json.Marshal(model)
-			if err != nil {
-				continue
-			}
-			value := string(encoded)
-			if value == current {
-				currentFound = true
-			}
-			options = append(options, formOption{Label: aiModelLabel(model), Value: value})
-		}
-		if !currentFound {
-			var persisted aiModel
-			label := current
-			if json.Unmarshal([]byte(current), &persisted) == nil {
-				label = aiModelLabel(persisted)
-			}
-			options = append([]formOption{{Label: label, Value: current}}, options...)
-		}
-		definition.Value.Options = options
-	}
-}
-
-func aiModelLabel(model aiModel) string {
-	provider := model.Provider
-	if model.ProviderAlias != "" {
-		provider = model.ProviderAlias
-	}
-	if provider == "" {
-		return model.Name
-	}
-	return provider + " / " + model.Name
 }
 
 // requirementSaveLabel matches action-form save: Save (Ctrl+Enter) or Save (Cmd+Enter).
@@ -354,13 +247,13 @@ func (a *App) onRequirementFormKey(event woxui.KeyEvent) bool {
 			a.moveRequirementFormFocus(-1)
 		}
 	case woxui.KeyArrowLeft:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeRequirementFormChoice(focused, -1)
 		} else {
 			a.editRequirementFormKey(event)
 		}
 	case woxui.KeyArrowRight:
-		if fieldType == "select" || fieldType == "selectAIModel" {
+		if fieldType == "select" {
 			a.changeRequirementFormChoice(focused, 1)
 		} else {
 			a.editRequirementFormKey(event)
@@ -370,7 +263,7 @@ func (a *App) onRequirementFormKey(event woxui.KeyEvent) bool {
 			a.editRequirementFormKey(event)
 		} else if fieldType == "table" {
 			a.openRequirementFormTable(focused)
-		} else if fieldType == "checkbox" || fieldType == "select" || fieldType == "selectAIModel" {
+		} else if fieldType == "checkbox" || fieldType == "select" {
 			a.changeRequirementFormChoice(focused, 1)
 		}
 	default:
@@ -567,7 +460,7 @@ func editableFormKeys(definitions []formDefinition) []string {
 	keys := make([]string, 0, len(definitions))
 	seen := make(map[string]struct{})
 	for _, definition := range definitions {
-		if definition.Type != "textbox" && definition.Type != "password" && definition.Type != "dirPath" && definition.Type != "checkbox" && definition.Type != "select" && definition.Type != "selectAIModel" && definition.Type != "table" && definition.Type != "dictationModel" && definition.Type != "ocrModel" && definition.Type != "dictationHotkey" {
+		if definition.Type != "textbox" && definition.Type != "password" && definition.Type != "dirPath" && definition.Type != "checkbox" && definition.Type != "select" && definition.Type != "table" && definition.Type != "dictationModel" && definition.Type != "ocrModel" && definition.Type != "dictationHotkey" {
 			continue
 		}
 		key := definition.Value.Key

@@ -18,7 +18,6 @@ import (
 	"wox/common/icons"
 	"wox/plugin"
 	notesplugin "wox/plugin/system/notes"
-	"wox/setting"
 	"wox/setting/definition"
 	"wox/setting/validator"
 	"wox/util"
@@ -38,8 +37,6 @@ var screenshotPinnedOverlayPrefix = "wox_screenshot_pin_"
 var screenshotRetentionDaysSettingKey = "retention_days"
 var screenshotOCREnabledSettingKey = "ocr_enabled"
 var screenshotOCRModelSettingKey = "ocr_model"
-var screenshotAIToolbarEnabledSettingKey = "ai_toolbar_enabled"
-var screenshotAIExtraActionID = "ai"
 var screenshotDefaultRetentionDays = 15
 var screenshotOCRSidecarVersion = 1
 
@@ -122,21 +119,6 @@ func (p *ScreenshotPlugin) GetMetadata() plugin.Metadata {
 							},
 						},
 					},
-				},
-			},
-			{
-				Type: definition.PluginSettingDefinitionTypeHead,
-				Value: &definition.PluginSettingValueHead{
-					Content: "i18n:plugin_screenshot_ai_head",
-				},
-			},
-			{
-				Type: definition.PluginSettingDefinitionTypeCheckBox,
-				Value: &definition.PluginSettingValueCheckBox{
-					Key:          screenshotAIToolbarEnabledSettingKey,
-					Label:        "i18n:plugin_screenshot_ai_toolbar",
-					Tooltip:      "i18n:plugin_screenshot_ai_toolbar_tooltip",
-					DefaultValue: "false",
 				},
 			},
 		},
@@ -372,35 +354,6 @@ func (p *ScreenshotPlugin) listScreenshotHistory() ([]screenshotHistoryItem, err
 
 func (p *ScreenshotPlugin) getScreenshotDirectory() string {
 	return filepath.Join(util.GetLocation().GetWoxDataDirectory(), "screenshots")
-}
-
-// isScreenshotAIToolbarEnabled follows the checkbox default of off when the value is missing.
-func (p *ScreenshotPlugin) isScreenshotAIToolbarEnabled(ctx context.Context) bool {
-	value := strings.TrimSpace(p.api.GetSetting(ctx, screenshotAIToolbarEnabledSettingKey))
-	if value == "" {
-		return false
-	}
-	enabled, err := strconv.ParseBool(value)
-	if err != nil {
-		return false
-	}
-	return enabled
-}
-
-// screenshotAIToolbarActions returns the AI toolbar button only when the user wants it and Chat is usable.
-func screenshotAIToolbarActions(enabled bool, hasProvider bool, tooltip string) []common.ScreenshotExtraAction {
-	if !enabled || !hasProvider {
-		return nil
-	}
-	return []common.ScreenshotExtraAction{{
-		ID:      screenshotAIExtraActionID,
-		Icon:    icons.ControlSparkles,
-		Tooltip: tooltip,
-	}}
-}
-
-func hasConfiguredAIProvider(providers []setting.AIProvider) bool {
-	return len(providers) > 0
 }
 
 func (p *ScreenshotPlugin) isScreenshotOCREnabled(ctx context.Context) bool {
@@ -945,17 +898,12 @@ func (p *ScreenshotPlugin) captureScreenshot(ctx context.Context, actionContext 
 	p.runScreenshot(ctx, "")
 }
 
-// runScreenshot keeps capture and history editing on the same export, OCR, pin, and AI completion path.
+// runScreenshot keeps capture and history editing on the same export, OCR, and pin path.
 func (p *ScreenshotPlugin) runScreenshot(ctx context.Context, editPath string) {
 	request := common.DefaultCaptureScreenshotRequest()
 	request.AllowVideoRecording = editPath == ""
 	request.SaveEditableScene = true
 	request.EditScreenshotPath = editPath
-	request.ExtraActions = screenshotAIToolbarActions(
-		p.isScreenshotAIToolbarEnabled(ctx),
-		hasConfiguredAIProvider(setting.GetSettingManager().GetWoxSetting(ctx).AIProviders.Get()),
-		p.api.GetTranslation(ctx, "ui_screenshot_tool_ai"),
-	)
 	result, err := plugin.GetPluginManager().GetUI().CaptureScreenshot(ctx, request)
 	if err != nil {
 		// The screenshot session spans Go, UI, and the native bridge, so transport failures need a local
@@ -1000,14 +948,6 @@ func (p *ScreenshotPlugin) runScreenshot(ctx context.Context, editPath string) {
 			}
 		})
 		p.scheduleScreenshotOCR(result.ScreenshotPath)
-		if result.ExtraActionID == screenshotAIExtraActionID {
-			plugin.InvokePluginToolAndNotify(ctx, p.api, plugin.InvokePluginToolOption{
-				PluginId:  common.AIChatPluginID,
-				Name:      ToolOpenChatWithAttachments,
-				Arguments: map[string]any{"paths": []any{result.ScreenshotPath}},
-			})
-			return
-		}
 		if result.PinToScreen {
 			// Capture pin now opens the overlay from the composited pixels before the PNG
 			// write returns. Retry from the saved file only when that in-memory show failed.

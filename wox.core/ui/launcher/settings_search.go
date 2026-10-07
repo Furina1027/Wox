@@ -47,11 +47,8 @@ var builtInSettingSearchAliases = map[string][]string{
 	"AppWidth":                  {"width"},
 	"AppFontFamily":             {"font"},
 	"EnableGlance":              {"glance"},
-	"AIProviders":               {"ai provider", "api key", "model"},
 	"AIBuiltinTools":            {"builtin", "tool", "enable", "disable"},
 	"AIDisabledBuiltinTools":    {"builtin", "tool", "enable", "disable"},
-	"AIMCPServers":              {"mcp", "tool", "server"},
-	"AISkills":                  {"skill", "repo", "path"},
 	"HttpProxyEnabled":          {"proxy"},
 	"HttpProxyUrl":              {"proxy url"},
 	"EnableAnonymousUsageStats": {"telemetry", "analytics"},
@@ -106,7 +103,6 @@ func (a *App) settingsSearchResults(snapshot settingsSnapshot) []settingsSearchR
 	}
 	candidates = append(candidates, a.settingsFormSearchCandidates(snapshot.hotkey.Form, "hotkey", "Hotkey")...)
 	candidates = append(candidates, a.settingsFormSearchCandidates(snapshot.general.Form, "general", "General")...)
-	candidates = append(candidates, a.settingsFormSearchCandidates(snapshot.ai.Form, "ai", "AI")...)
 
 	plugins := snapshot.search.Plugins
 	if len(plugins) == 0 && !snapshot.plugins.PluginsStore {
@@ -471,8 +467,6 @@ func (a *App) focusBuiltInSettingsSearchTarget(tab, settingKey string) {
 	var fields *formFieldsState
 	if tab == "hotkey" {
 		fields = a.hotkeySettings.Form()
-	} else if tab == "ai" {
-		fields = a.aiSettings.Form()
 	} else if tab == "general" {
 		fields = a.generalSettings.Form()
 	}

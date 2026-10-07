@@ -12,7 +12,7 @@ func TestTakeRecordingForOutput(t *testing.T) {
 	session := &speech.Session{}
 	p := &DictationPlugin{session: session, isRecording: true, activeAction: dictationAction{ID: "test"}}
 	started := time.Now()
-	got, action, _ := p.takeRecordingForOutput(context.Background(), 20*time.Millisecond)
+	got, action := p.takeRecordingForOutput(context.Background(), 20*time.Millisecond)
 	if got != session || action.ID != "test" || p.session != nil || p.isRecording || p.pendingOutput != nil {
 		t.Fatal("tail completion must detach the recording exactly once")
 	}
@@ -20,13 +20,13 @@ func TestTakeRecordingForOutput(t *testing.T) {
 		t.Fatal("capture tail was skipped")
 	}
 	p.session, p.isRecording, p.pendingOutput = session, true, session
-	if got, _, _ := p.takeRecordingForOutput(context.Background(), time.Hour); got != nil {
+	if got, _ := p.takeRecordingForOutput(context.Background(), time.Hour); got != nil {
 		t.Fatal("duplicate stop must not claim the recording")
 	}
 	p.pendingOutput = nil
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if got, _, _ := p.takeRecordingForOutput(ctx, time.Hour); got != nil || p.session != session || p.pendingOutput != nil {
+	if got, _ := p.takeRecordingForOutput(ctx, time.Hour); got != nil || p.session != session || p.pendingOutput != nil {
 		t.Fatal("canceled wait must not output or detach the recording")
 	}
 }
@@ -36,7 +36,7 @@ func TestTakeRecordingForOutputDoesNotTakeReplacement(t *testing.T) {
 	p := &DictationPlugin{session: &speech.Session{}, isRecording: true}
 	done := make(chan *speech.Session, 1)
 	go func() {
-		session, _, _ := p.takeRecordingForOutput(context.Background(), 100*time.Millisecond)
+		session, _ := p.takeRecordingForOutput(context.Background(), 100*time.Millisecond)
 		done <- session
 	}()
 	deadline := time.After(time.Second)

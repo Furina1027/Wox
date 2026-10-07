@@ -165,27 +165,23 @@ func (a *App) pluginDetailProps(snapshot settingsSnapshot, width, height, imageS
 		Error:    plugins.PluginOperationError,
 	}
 	callbacks := formFieldCallbacks{
-		idPrefix:          "plugin-settings",
-		labelWidth:        a.pluginFormLabelWidth(form.definitions[1:]),
-		imageScale:        imageScale,
-		focus:             a.focusPluginFormField,
-		blur:              a.blurPluginFormField,
-		change:            a.changePluginFormChoice,
-		setText:           a.setPluginFormText,
-		pickDir:           a.pickPluginFormDirectory,
-		onKey:             a.onPluginSettingsKey,
-		openTable:         a.openPluginFormTable,
-		openChoice:        a.openPluginFormChoice,
-		openAIModelChoice: a.openPluginAIModelChoice,
-		setAIModelName:    a.setPluginAIModelName,
-		finishAIModelEdit: a.finishPluginAIModelEdit,
-		openAISettings:    a.openPluginAISettings,
-		openModel:         a.openPluginModelManager,
-		recordKey:         a.recordPluginFormHotkey,
-		runServiceAction:  a.runPluginServiceAction,
-		openLink:          a.openPluginSettingLink,
-		serviceBusy:       form.saving,
-		fieldErrors:       form.fieldErrors,
+		idPrefix:         "plugin-settings",
+		labelWidth:       a.pluginFormLabelWidth(form.definitions[1:]),
+		imageScale:       imageScale,
+		focus:            a.focusPluginFormField,
+		blur:             a.blurPluginFormField,
+		change:           a.changePluginFormChoice,
+		setText:          a.setPluginFormText,
+		pickDir:          a.pickPluginFormDirectory,
+		onKey:            a.onPluginSettingsKey,
+		openTable:        a.openPluginFormTable,
+		openChoice:       a.openPluginFormChoice,
+		openModel:        a.openPluginModelManager,
+		recordKey:        a.recordPluginFormHotkey,
+		runServiceAction: a.runPluginServiceAction,
+		openLink:         a.openPluginSettingLink,
+		serviceBusy:      form.saving,
+		fieldErrors:      form.fieldErrors,
 	}
 	if form.statusError {
 		callbacks.serviceError = form.status
@@ -513,11 +509,8 @@ func pluginPrivacyAccesses(features []pluginFeature) []string {
 				}
 			}
 		}
-		if feature.Name == "llm" || feature.Name == "ai" {
-			accessSet["llm"] = true
-		}
 	}
-	order := []string{"requireActiveWindowName", "requireActiveWindowPid", "requireActiveWindowId", "requireActiveWindowIcon", "requireActiveWindowIsOpenSaveDialog", "requireActiveWindowIsOpenSaveDialogSelectFolder", "requireActiveBrowserUrl", "llm"}
+	order := []string{"requireActiveWindowName", "requireActiveWindowPid", "requireActiveWindowId", "requireActiveWindowIcon", "requireActiveWindowIsOpenSaveDialog", "requireActiveWindowIsOpenSaveDialogSelectFolder", "requireActiveBrowserUrl"}
 	accesses := make([]string, 0, len(accessSet))
 	for _, access := range order {
 		if accessSet[access] {
@@ -549,8 +542,6 @@ func pluginPrivacyDescription(a *App, access string) string {
 		return a.translate("i18n:ui_plugin_privacy_open_save_dialog_select_folder_desc")
 	case "requireActiveBrowserUrl":
 		return a.translate("i18n:ui_plugin_privacy_browser_url_desc")
-	case "llm":
-		return a.translate("i18n:ui_plugin_privacy_llm_desc")
 	default:
 		return ""
 	}
@@ -572,8 +563,6 @@ func pluginPrivacyTitle(a *App, access string) string {
 		return a.translate("i18n:ui_plugin_privacy_open_save_dialog_select_folder")
 	case "requireActiveBrowserUrl":
 		return a.translate("i18n:ui_plugin_privacy_browser_url")
-	case "llm":
-		return a.translate("i18n:ui_plugin_privacy_llm")
 	default:
 		return access
 	}

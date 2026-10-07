@@ -115,12 +115,6 @@ func (l *Location) Init() error {
 	if directoryErr := l.EnsureDirectoryExist(l.GetModelsDirectory()); directoryErr != nil {
 		return directoryErr
 	}
-	if directoryErr := l.EnsureDirectoryExist(l.GetAISkillsDirectory()); directoryErr != nil {
-		return directoryErr
-	}
-	if directoryErr := l.EnsureDirectoryExist(l.GetAISkillsCacheDirectory()); directoryErr != nil {
-		return directoryErr
-	}
 	if directoryErr := l.EnsureDirectoryExist(l.GetScriptPluginTemplatesDirectory()); directoryErr != nil {
 		return directoryErr
 	}
@@ -268,21 +262,17 @@ func (l *Location) GetLegacyDictationDirectory() string {
 	return path.Join(l.woxDataDirectory, "dictation")
 }
 
-func (l *Location) GetAISkillsDirectory() string {
-	return path.Join(l.woxDataDirectory, "ai", "skills")
-}
-
-func (l *Location) GetAISkillsCacheDirectory() string {
-	return path.Join(l.woxDataDirectory, "ai", "skills-cache")
+func (l *Location) GetPluginTemplatesDirectory() string {
+	return path.Join(l.woxDataDirectory, "plugin-templates")
 }
 
 func (l *Location) GetScriptPluginTemplatesDirectory() string {
-	return path.Join(l.GetAISkillsDirectory(), "wox-plugin-creator", "assets", "script_plugin_templates")
+	return path.Join(l.GetPluginTemplatesDirectory(), "script_plugin_templates")
 }
 
 // GetSingleFilePluginTemplatesDirectory returns WPM templates for single-file SDK plugins.
 func (l *Location) GetSingleFilePluginTemplatesDirectory() string {
-	return path.Join(l.GetAISkillsDirectory(), "wox-plugin-creator", "assets", "single_file_plugin_templates")
+	return path.Join(l.GetPluginTemplatesDirectory(), "single_file_plugin_templates")
 }
 
 func (l *Location) GetCacheDirectory() string {

@@ -13,7 +13,6 @@ import (
 
 	woxcomponent "wox/ui/launcher/component"
 	launcherview "wox/ui/launcher/view"
-	previewview "wox/ui/launcher/view/preview"
 	woxui "wox/ui/runtime"
 	woxwidget "wox/ui/widget"
 	"wox/util"
@@ -91,7 +90,6 @@ type viewSnapshot struct {
 	requirementFormActive bool
 	queryFocused          bool
 	queryEnabled          bool
-	chatFullscreen        bool
 	webViewFullscreen     bool
 	terminalFullscreen    bool
 	actionPanel           bool
@@ -193,7 +191,6 @@ func (a *App) snapshot() viewSnapshot {
 		requirementFormActive: a.requirementForm != nil && a.requirementForm.active,
 		queryFocused:          a.host != nil && a.host.HasFocus(launcherview.LauncherQueryInputKey),
 		queryEnabled:          a.queryCanFocus(),
-		chatFullscreen:        a.chatFullscreen,
 		webViewFullscreen:     a.webViewFullscreen,
 		terminalFullscreen:    a.terminalFullscreen,
 		actionPanel:           a.actionPanel,
@@ -230,7 +227,7 @@ func (a *App) buildLauncher(frame woxui.FrameInfo) woxwidget.Widget {
 	contentBounds := woxcomponent.LauncherContentBounds(frame.Size.Width, frame.Size.Height, snapshot.palette.AppContentInset, snapshot.palette.Surfaces)
 	width, height := contentBounds.Width, contentBounds.Height
 	queryHeight := float32(0)
-	chromeFullscreen := snapshot.chatFullscreen || snapshot.terminalFullscreen
+	chromeFullscreen := snapshot.terminalFullscreen
 	previewFullscreen := chromeFullscreen || snapshot.webViewFullscreen
 	queryLineHeight := a.queryLineHeight(snapshot.densityMetrics)
 	queryAtBottom := snapshot.show.QueryBoxAtBottom
@@ -381,22 +378,6 @@ func (a *App) buildPreviewTitleBar(snapshot viewSnapshot, width float32, windowF
 			OnOpenInBrowser: a.openWebViewInSystemBrowser,
 		})
 	}
-	preview := a.resolvePreview(snapshot.results[snapshot.selected].Preview)
-	if preview.PreviewType == "chat" {
-		if chatSnapshot, err := a.chatPreviewSnapshotFor(snapshot.results[snapshot.selected], preview); err == nil {
-			_, contentWidth := launcherview.TitleBarContentFrame(runtime.GOOS, true, width)
-			header := previewview.ChatHeader(a.chatHeaderProps(chatSnapshot, snapshot.palette, contentWidth, launcherview.SettingsTitleBarHeight, false, true))
-			return launcherview.SettingsTitleBar(launcherview.SettingsTitleBarProps{
-				Width: width, CloseOnly: true, Content: header, Platform: runtime.GOOS, Theme: snapshot.palette.componentTheme().Controls, Active: windowFocused,
-				OnDrag: func() {
-					if a.window != nil {
-						_ = a.window.StartDragging()
-					}
-				},
-				OnClose: a.closePreviewWindow,
-			})
-		}
-	}
 	titleStyle := woxui.TextStyle{Size: 13, Weight: woxui.FontWeightSemibold}
 	titleWidth := float32(160)
 	if a.window != nil {
@@ -439,9 +420,9 @@ func launcherPreviewOnly(snapshot viewSnapshot) bool {
 		return false
 	}
 	preview := snapshot.results[snapshot.selected].Preview
-	return (launcherChromeHidden(snapshot.show, snapshot.chatFullscreen) || snapshot.terminalFullscreen) &&
+	return (launcherChromeHidden(snapshot.show) || snapshot.terminalFullscreen) &&
 		launcherPreviewVisible(snapshot.layout, preview) &&
-		launcherPreviewRatio(snapshot.layout, snapshot.chatFullscreen || snapshot.webViewFullscreen || snapshot.terminalFullscreen) == 0
+		launcherPreviewRatio(snapshot.layout, snapshot.webViewFullscreen || snapshot.terminalFullscreen) == 0
 }
 
 // launcherPreviewTitleBarVisible limits the opt-in title bar to chrome-free previews.
@@ -986,11 +967,11 @@ func (a *App) buildContent(snapshot viewSnapshot, width, height, imageScale, und
 	if !previewVisible {
 		return a.buildResults(snapshot, width, height, imageScale, underlayHeight)
 	}
-	ratio := launcherPreviewRatio(snapshot.layout, snapshot.chatFullscreen || snapshot.webViewFullscreen || snapshot.terminalFullscreen)
+	ratio := launcherPreviewRatio(snapshot.layout, snapshot.webViewFullscreen || snapshot.terminalFullscreen)
 	if ratio <= 0 {
 		result := snapshot.results[snapshot.selected]
 		preview := a.buildPreviewSection(result, snapshot, width, height, imageScale)
-		if launcherChromeHidden(snapshot.show, snapshot.chatFullscreen) && a.resolvePreview(result.Preview).PreviewType != "chat" && !launcherPreviewTitleBarVisible(snapshot) {
+		if launcherChromeHidden(snapshot.show) && !launcherPreviewTitleBarVisible(snapshot) {
 			label := a.translate("i18n:ui_close")
 			if strings.TrimSpace(label) == "" || label == "i18n:ui_close" {
 				label = "Close"
@@ -1028,19 +1009,17 @@ func wrapPreviewOnlyResults(snapshot viewSnapshot, preview woxwidget.Widget) wox
 
 func (a *App) buildPreviewSection(result queryResult, snapshot viewSnapshot, width, height, imageScale float32) woxwidget.Widget {
 	resolved := a.resolvePreview(result.Preview)
-	showChatHeader := resolved.PreviewType != "chat" || !launcherPreviewTitleBarVisible(snapshot)
-	child := a.buildPreviewWithChatHeader(result, snapshot.palette, width, height, imageScale, showChatHeader)
-	// Chat is already prepared above and owns retained scrolling/message state.
-	// Hashing its entire history to cache a trivial wrapper costs more than rebuilding it.
-	// Media likewise owns its smaller animation and live-data boundaries.
-	if resolved.PreviewType == "media" || resolved.PreviewType == "chat" {
+	child := a.buildPreview(result, snapshot.palette, width, height, imageScale)
+	// Media owns its smaller animation and live-data boundaries. Hashing it to
+	// cache a trivial wrapper costs more than rebuilding it.
+	if resolved.PreviewType == "media" {
 		return child
 	}
-	state := []any{result, resolved, snapshot.palette, snapshot.show, snapshot.chatFullscreen, snapshot.webViewFullscreen, snapshot.terminalFullscreen, width, height, imageScale, a.translationsRevision.Load(), a.imagesRevision.Load()}
+	state := []any{result, resolved, snapshot.palette, snapshot.show, snapshot.webViewFullscreen, snapshot.terminalFullscreen, width, height, imageScale, a.translationsRevision.Load(), a.imagesRevision.Load()}
 	switch resolved.PreviewType {
 	case "query_requirement_settings":
 		if a.requirementForm != nil {
-			state = append(state, snapshotRequirementFormLocked(a.requirementForm, a.aiSettings.ModelsError()))
+			state = append(state, snapshotRequirementFormLocked(a.requirementForm))
 		}
 	case "trigger_keyword_conflict":
 		if a.triggerConflict != nil {
@@ -1087,17 +1066,18 @@ func launcherPreviewVisible(layout queryLayout, preview queryPreview) bool {
 	}
 }
 
-func launcherChromeHidden(show showAppParams, chatFullscreen bool) bool {
-	return chatFullscreen || show.HideQueryBox && show.HideToolbar
+// launcherChromeHidden reports whether the launcher hides its own query box and toolbar chrome.
+func launcherChromeHidden(show showAppParams) bool {
+	return show.HideQueryBox && show.HideToolbar
 }
 
-// launcherPreviewRatio keeps chat query layout separate from explicit fullscreen input mode.
-func launcherPreviewRatio(layout queryLayout, chatFullscreen bool) float32 {
+// launcherPreviewRatio collapses the result pane while a fullscreen input mode owns the window.
+func launcherPreviewRatio(layout queryLayout, fullscreen bool) float32 {
 	ratio := float32(0.4)
 	if layout.ResultPreviewWidthRatio != nil && *layout.ResultPreviewWidthRatio >= 0 && *layout.ResultPreviewWidthRatio <= 1 {
 		ratio = float32(*layout.ResultPreviewWidthRatio)
 	}
-	if layout.ChatMode || chatFullscreen {
+	if fullscreen {
 		return 0
 	}
 	return ratio

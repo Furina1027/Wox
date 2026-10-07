@@ -149,11 +149,6 @@ type GeneralSettings struct {
 	TrayQueries                        []setting.TrayQuery
 	LaunchMode                         setting.LaunchMode
 	StartPage                          setting.StartPage
-	AIProviders                        []setting.AIProvider
-	AIMCPServers                       []common.AIChatMCPServerConfig
-	AISkills                           []common.Skill
-	AIDisabledBuiltinTools             []string
-	AIConfigurableBuiltinTools         []common.AIConfigurableBuiltinTool
 	HTTPProxyEnabled                   bool
 	HTTPProxyURL                       string
 	ShowPosition                       setting.PositionType
@@ -251,74 +246,6 @@ type HotkeyInteractionSettingsServices interface {
 // WindowManagerSettingsServices exposes browser integration used by workspace layouts.
 type WindowManagerSettingsServices interface {
 	BrowserExtensionConnected(ctx context.Context, sessionID string) (bool, error)
-}
-
-// AIProvider describes one built-in provider option.
-type AIProvider struct {
-	Name        string
-	Icon        common.WoxImage
-	DefaultHost string
-}
-
-// AIModel describes one model exposed by a configured provider.
-type AIModel struct {
-	Name          string
-	Provider      string
-	ProviderAlias string
-}
-
-// AICommandTemplate contains the editable command fields exposed by the shared template store.
-type AICommandTemplate struct {
-	ID            string
-	Category      string
-	Name          string
-	Description   string
-	Command       string
-	Prompt        string
-	ThinkingMode  string
-	DefaultAction string
-	Vision        bool
-}
-
-// AICommandTemplateServices exposes the optional command-template catalog used by plugin settings.
-type AICommandTemplateServices interface {
-	AICommandTemplates(ctx context.Context, sessionID string) ([]AICommandTemplate, error)
-	DefaultAIModel(ctx context.Context, sessionID string) (AIModel, error)
-}
-
-// AISkill describes one discovered AI skill consumed by launcher selection surfaces.
-type AISkill struct {
-	ID           string
-	Name         string
-	Description  string
-	Path         string
-	ManifestPath string
-	Source       string
-	SourceName   string
-	SourceURL    string
-	Error        string
-	Enabled      bool
-}
-
-// AIPluginMention describes one plugin the chat composer can @mention.
-type AIPluginMention struct {
-	ID     string
-	Name   string
-	NameEn string
-	Icon   common.WoxImage
-}
-
-// AICatalogSettingsServices exposes provider, model, and skill catalogs.
-type AICatalogSettingsServices interface {
-	AIProviders(ctx context.Context, sessionID string) ([]AIProvider, error)
-	AIModels(ctx context.Context, sessionID string) ([]AIModel, error)
-	AISkills(ctx context.Context, sessionID string) ([]AISkill, error)
-	ChatPluginMentions(ctx context.Context, sessionID string) ([]AIPluginMention, error)
-}
-
-// AIOperationSettingsServices exposes settings-owned AI skill mutations.
-type AIOperationSettingsServices interface {
-	CloneAISkills(ctx context.Context, sessionID string, sourceURL string) ([]AISkill, error)
 }
 
 // ManagedModelKind identifies one downloadable model family.
@@ -469,7 +396,6 @@ const (
 
 // ThemeOperationSettingsServices exposes theme lifecycle changes.
 type ThemeOperationSettingsServices interface {
-	SuggestThemeEdits(ctx context.Context, sessionID string, model common.Model, conversations []common.Conversation, onProgress common.ChatStreamFunc) (string, error)
 	OperateTheme(ctx context.Context, sessionID string, themeID string, operation ThemeOperation) error
 	SaveTheme(ctx context.Context, sessionID string, name string, theme common.Theme, overwrite bool) (common.Theme, error)
 	SaveAutoTheme(ctx context.Context, sessionID string, name string, lightThemeID string, darkThemeID string, themeID string, overwrite bool) (common.Theme, error)
@@ -535,8 +461,6 @@ type SettingsServices interface {
 	AppSettingsServices
 	HotkeyInteractionSettingsServices
 	WindowManagerSettingsServices
-	AICatalogSettingsServices
-	AIOperationSettingsServices
 	ModelManagementSettingsServices
 	ThemeCatalogSettingsServices
 	ThemeCurrentSettingsServices

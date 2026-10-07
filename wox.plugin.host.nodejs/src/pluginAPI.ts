@@ -39,7 +39,6 @@ import { currentConnection, waitingForResponse } from "./connection"
 import Deferred from "promise-deferred"
 import { logger } from "./logger"
 import { MetadataCommand, PluginSettingDefinitionItem } from "@wox-launcher/wox-plugin/types/setting"
-import { AI } from "@wox-launcher/wox-plugin/types/ai"
 import { MRUData } from "@wox-launcher/wox-plugin"
 import { PluginJsonRpcTypeRequest, pluginInstances } from "./jsonrpc"
 import { PluginJsonRpcRequest } from "./types"
@@ -54,7 +53,6 @@ export class PluginAPI implements PublicAPI {
   enterPluginQueryCallbacks: Map<string, (ctx: Context) => Promise<void> | void>
   leavePluginQueryCallbacks: Map<string, (ctx: Context) => Promise<void> | void>
   dragOutCallbacks: Map<string, (ctx: Context, event: DragOutEvent) => Promise<void> | void>
-  llmStreamCallbacks: Map<string, AI.ChatStreamFunc>
   mruRestoreCallbacks: Map<string, (ctx: Context, mruData: MRUData) => Promise<Result | null>>
   pluginToolCallbacks: Map<string, PluginToolHandler>
   pluginToolCallbackIds: Map<string, string>
@@ -71,7 +69,6 @@ export class PluginAPI implements PublicAPI {
     this.enterPluginQueryCallbacks = new Map<string, (ctx: Context) => Promise<void> | void>()
     this.leavePluginQueryCallbacks = new Map<string, (ctx: Context) => Promise<void> | void>()
     this.dragOutCallbacks = new Map<string, (ctx: Context, event: DragOutEvent) => Promise<void> | void>()
-    this.llmStreamCallbacks = new Map<string, AI.ChatStreamFunc>()
     this.mruRestoreCallbacks = new Map<string, (ctx: Context, mruData: MRUData) => Promise<Result | null>>()
     this.pluginToolCallbacks = new Map<string, PluginToolHandler>()
     this.pluginToolCallbackIds = new Map<string, string>()
@@ -302,11 +299,6 @@ export class PluginAPI implements PublicAPI {
     await Promise.allSettled(Array.from(this.pluginToolCalls))
   }
 
-  async LLMStream(ctx: Context, conversations: AI.Conversation[], callback: AI.ChatStreamFunc): Promise<void> {
-    const callbackId = crypto.randomUUID()
-    this.llmStreamCallbacks.set(callbackId, callback)
-    await this.invokeMethod(ctx, "LLMStream", { callbackId, conversations: JSON.stringify(conversations) })
-  }
 
   async OnMRURestore(ctx: Context, callback: (ctx: Context, mruData: MRUData) => Promise<Result | null>): Promise<void> {
     const callbackId = crypto.randomUUID()

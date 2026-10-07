@@ -11,8 +11,6 @@ from typing import Any, Dict, Optional, Union
 from websockets.asyncio.server import ServerConnection
 from wox_plugin import (
     ActionContext,
-    ChatStreamData,
-    ChatStreamDataType,
     Context,
     FormActionContext,
     InvokePluginToolHandlerOption,
@@ -92,8 +90,6 @@ async def handle_request_from_wox(ctx: Context, request: Dict[str, Any], ws: Ser
         return await on_deep_link(ctx, request)
     elif method == "onMRURestore":
         return await on_mru_restore(ctx, request)
-    elif method == "onLLMStream":
-        return await on_llm_stream(ctx, request)
     elif method == "onInvokePluginTool":
         return await on_invoke_plugin_tool(ctx, request)
     else:
@@ -853,43 +849,6 @@ async def on_drag_out(ctx: Context, request: Dict[str, Any]) -> None:
     result = callback(ctx, DragOutEvent.from_dict(event_payload))
     if inspect.isawaitable(result):
         await result
-
-
-async def on_llm_stream(ctx: Context, request: Dict[str, Any]) -> None:
-    """Handle LLM stream callback"""
-    plugin_id = request.get("PluginId")
-    if not plugin_id:
-        raise Exception("PluginId is required")
-
-    params = request.get("Params", {})
-    callback_id = params.get("CallbackId")
-    stream_type = params.get("StreamType", "streaming")
-    data = params.get("Data", "")
-    reasoning = params.get("Reasoning", "")
-
-    plugin_instance = plugin_instances.get(plugin_id)
-    if not plugin_instance:
-        raise Exception(f"plugin instance not found: {plugin_id}")
-
-    if not plugin_instance.api:
-        raise Exception(f"plugin API not found: {plugin_id}")
-
-    api = plugin_instance.api
-    if not isinstance(api, PluginAPI):
-        raise Exception(f"Invalid API type for plugin: {plugin_id}")
-
-    callback = api.llm_stream_callbacks.get(callback_id)
-    if not callback:
-        await logger.error(ctx.get_trace_id(), f"LLM stream callback not found: {callback_id}")
-        raise Exception(f"LLM stream callback not found: {callback_id}")
-
-    # Create ChatStreamData and call the callback
-    stream_data = ChatStreamData(
-        status=ChatStreamDataType(stream_type),
-        data=data,
-        reasoning=reasoning,
-    )
-    callback(stream_data)
 
 
 async def on_invoke_plugin_tool(ctx: Context, request: Dict[str, Any]) -> Any:

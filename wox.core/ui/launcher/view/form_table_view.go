@@ -1318,7 +1318,7 @@ func formTableRowControl(props FormTableRowFieldProps, width, height float32) wo
 		return formTableRowImageControl(props, width, height)
 	case "app":
 		return formTableRowAppControl(props, width, height)
-	case "select", "selectAIModel":
+	case "select":
 		return formTableRowSelectControl(props, width, height)
 	case "hotkey", "dictationHotkey":
 		recorder, recorderWidth := woxcomponent.WoxHotkeyRecorder(woxcomponent.HotkeyRecorderProps{

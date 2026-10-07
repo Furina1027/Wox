@@ -19,7 +19,6 @@ import (
 	"wox/util/emojiimage"
 	"wox/util/emojisearch"
 
-	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
 
@@ -158,23 +157,6 @@ func (e *EmojiPlugin) GetMetadata() plugin.Metadata {
 					},
 				},
 			},
-			{
-				Type: definition.PluginSettingDefinitionTypeCheckBox,
-				Value: &definition.PluginSettingValueCheckBox{
-					Key:          "aiMatchEnabled",
-					Label:        "i18n:plugin_emoji_setting_ai_enable_label",
-					Tooltip:      "i18n:plugin_emoji_setting_ai_enable_tooltip",
-					DefaultValue: "false",
-				},
-			},
-			{
-				Type: definition.PluginSettingDefinitionTypeSelectAIModel,
-				Value: &definition.PluginSettingValueSelectAIModel{
-					Key:     "aiModel",
-					Label:   "i18n:plugin_emoji_setting_ai_model_label",
-					Tooltip: "i18n:plugin_emoji_setting_ai_model_tooltip",
-				},
-			},
 		},
 		SupportedOS: []string{
 			"Windows",
@@ -182,9 +164,6 @@ func (e *EmojiPlugin) GetMetadata() plugin.Metadata {
 			"Linux",
 		},
 		Features: []plugin.MetadataFeature{
-			{
-				Name: plugin.MetadataFeatureAI,
-			},
 			{
 				Name: plugin.MetadataFeatureQueryEnv,
 				Params: map[string]any{
@@ -318,8 +297,6 @@ func (e *EmojiPlugin) Query(ctx context.Context, query plugin.Query) plugin.Quer
 		}
 	}
 
-	e.maybeStartAIMatch(ctx, query, search, existingEmojiSet, &results)
-
 	return e.newEmojiQueryResponse(results)
 }
 
@@ -333,187 +310,6 @@ func (e *EmojiPlugin) newEmojiQueryResponse(results []plugin.QueryResult) plugin
 	}
 	response.Layout = plugin.QueryLayout{GridLayout: &gridLayout}
 	return response
-}
-
-func (e *EmojiPlugin) maybeStartAIMatch(ctx context.Context, query plugin.Query, search string, existingEmojiSet map[string]bool, results *[]plugin.QueryResult) {
-	if query.Id == "" {
-		return
-	}
-	if !e.isAIMatchEnabled(ctx) {
-		return
-	}
-	if len(search) < 2 {
-		return
-	}
-
-	model, ok := e.getAIModel(ctx)
-	if !ok {
-		return
-	}
-
-	aiGeneratingResult := e.createAIPlaceholderResult()
-	*results = append(*results, aiGeneratingResult)
-
-	util.Go(ctx, "emoji ai match", func() {
-		systemPrompt := "You are an emoji matcher. Return JSON only."
-		userPrompt := fmt.Sprintf("Query: %s\nReturn JSON: {\"emojis\": [\"😀\", \"😄\"]}. Return up to 12 emojis.", search)
-		conversations := []common.Conversation{
-			{Role: common.ConversationRoleSystem, Text: systemPrompt},
-			{Role: common.ConversationRoleUser, Text: userPrompt},
-		}
-
-		var finalData string
-		err := e.api.AIChatStream(ctx, model, conversations, common.ChatOptions{
-			ThinkingMode: common.ChatThinkingModeNonThinking,
-		}, func(streamResult common.ChatStreamData) {
-			if streamResult.Status == common.ChatStreamStatusStreaming || streamResult.Status == common.ChatStreamStatusStreamed || streamResult.Status == common.ChatStreamStatusFinished {
-				finalData = streamResult.Data
-			}
-
-			if streamResult.Status == common.ChatStreamStatusFinished {
-				e.handleAIMatchResult(ctx, query, finalData, existingEmojiSet, aiGeneratingResult.Id)
-			}
-			if streamResult.Status == common.ChatStreamStatusError {
-				e.updateAIPlaceholder(ctx, aiGeneratingResult.Id, "i18n:plugin_emoji_ai_failed", common.NewWoxImageEmoji("⚠️"))
-			}
-		})
-		if err != nil {
-			e.updateAIPlaceholder(ctx, aiGeneratingResult.Id, "i18n:plugin_emoji_ai_failed", common.NewWoxImageEmoji("⚠️"))
-			return
-		}
-	})
-}
-
-func (e *EmojiPlugin) handleAIMatchResult(ctx context.Context, query plugin.Query, data string, existingEmojiSet map[string]bool, aiGeneratingResultId string) {
-	entries := e.parseAIEmojis(data)
-	if len(entries) == 0 {
-		e.updateAIPlaceholder(ctx, aiGeneratingResultId, "i18n:plugin_emoji_ai_no_result", common.NewWoxImageEmoji("😕"))
-		return
-	}
-
-	var results []plugin.QueryResult
-	for _, entry := range entries {
-		if existingEmojiSet[entry.Emoji] {
-			continue
-		}
-		result := e.createEmojiResult(ctx, query, entry, false)
-		result.Group = "i18n:plugin_emoji_ai_group"
-		result.GroupScore = 90
-		result.Score = 90
-		results = append(results, result)
-		if len(results) >= 12 {
-			break
-		}
-	}
-
-	if len(results) == 0 {
-		e.updateAIPlaceholder(ctx, aiGeneratingResultId, "i18n:plugin_emoji_ai_no_result", common.NewWoxImageEmoji("😕"))
-		return
-	}
-	e.updateAIPlaceholderWithResult(ctx, aiGeneratingResultId, results[0])
-	if len(results) > 1 {
-		e.api.PushResults(ctx, query, results[1:])
-	}
-}
-
-func (e *EmojiPlugin) parseAIEmojis(data string) []EmojiData {
-	var results []EmojiData
-	seen := make(map[string]bool)
-
-	if gjson.Valid(data) {
-		emojiArray := gjson.Get(data, "emojis")
-		if emojiArray.IsArray() {
-			emojiArray.ForEach(func(_, value gjson.Result) bool {
-				emoji := strings.TrimSpace(value.String())
-				if emoji == "" || seen[emoji] {
-					return true
-				}
-				entry := e.findEmoji(emoji)
-				if entry != nil {
-					results = append(results, *entry)
-					seen[emoji] = true
-				}
-				return true
-			})
-		}
-	}
-
-	if len(results) > 0 {
-		return results
-	}
-
-	for _, entry := range e.emojis {
-		if seen[entry.Emoji] {
-			continue
-		}
-		if strings.Contains(data, entry.Emoji) {
-			results = append(results, entry)
-			seen[entry.Emoji] = true
-		}
-	}
-
-	return results
-}
-
-func (e *EmojiPlugin) createAIPlaceholderResult() plugin.QueryResult {
-	return plugin.QueryResult{
-		Id:         uuid.New().String(),
-		Title:      "i18n:plugin_emoji_ai_matching",
-		SubTitle:   "i18n:plugin_emoji_ai_matching_subtitle",
-		Icon:       icons.Get(icons.StatusLoading),
-		Group:      "i18n:plugin_emoji_ai_group",
-		GroupScore: 90,
-		Score:      90,
-	}
-}
-
-func (e *EmojiPlugin) updateAIPlaceholder(ctx context.Context, resultId string, subtitle string, icon common.WoxImage) {
-	updatable := e.api.GetUpdatableResult(ctx, resultId)
-	if updatable == nil {
-		return
-	}
-
-	updatable.SubTitle = &subtitle
-	updatable.Icon = &icon
-	e.api.UpdateResult(ctx, *updatable)
-}
-
-func (e *EmojiPlugin) updateAIPlaceholderWithResult(ctx context.Context, resultId string, result plugin.QueryResult) {
-	updatable := e.api.GetUpdatableResult(ctx, resultId)
-	if updatable == nil {
-		return
-	}
-
-	title := result.Title
-	subTitle := result.SubTitle
-	icon := result.Icon
-	actions := result.Actions
-
-	updatable.Title = &title
-	updatable.SubTitle = &subTitle
-	updatable.Icon = &icon
-	updatable.Actions = &actions
-	e.api.UpdateResult(ctx, *updatable)
-}
-
-func (e *EmojiPlugin) getAIModel(ctx context.Context) (common.Model, bool) {
-	modelRaw := strings.TrimSpace(e.api.GetSetting(ctx, "aiModel"))
-	if modelRaw == "" {
-		return common.Model{}, false
-	}
-	var model common.Model
-	if err := json.Unmarshal([]byte(modelRaw), &model); err != nil {
-		e.api.Log(ctx, plugin.LogLevelError, fmt.Sprintf("Failed to parse AI model: %v", err))
-		return common.Model{}, false
-	}
-	if model.Name == "" || model.Provider == "" {
-		return common.Model{}, false
-	}
-	return model, true
-}
-
-func (e *EmojiPlugin) isAIMatchEnabled(ctx context.Context) bool {
-	return strings.EqualFold(strings.TrimSpace(e.api.GetSetting(ctx, "aiMatchEnabled")), "true")
 }
 
 func (e *EmojiPlugin) createEmojiResult(ctx context.Context, query plugin.Query, entry EmojiData, isFrequentlyUsed bool) plugin.QueryResult {

@@ -12,16 +12,15 @@ import (
 type PluginSettingDefinitionType string
 
 const (
-	PluginSettingDefinitionTypeHead          PluginSettingDefinitionType = "head"
-	PluginSettingDefinitionTypeTextBox       PluginSettingDefinitionType = "textbox"
-	PluginSettingDefinitionTypePassword      PluginSettingDefinitionType = "password"
-	PluginSettingDefinitionTypeDirPath       PluginSettingDefinitionType = "dirPath"
-	PluginSettingDefinitionTypeCheckBox      PluginSettingDefinitionType = "checkbox"
-	PluginSettingDefinitionTypeSelect        PluginSettingDefinitionType = "select"
-	PluginSettingDefinitionTypeSelectAIModel PluginSettingDefinitionType = "selectAIModel"
-	PluginSettingDefinitionTypeLabel         PluginSettingDefinitionType = "label"
-	PluginSettingDefinitionTypeNewLine       PluginSettingDefinitionType = "newline"
-	PluginSettingDefinitionTypeTable         PluginSettingDefinitionType = "table"
+	PluginSettingDefinitionTypeHead     PluginSettingDefinitionType = "head"
+	PluginSettingDefinitionTypeTextBox  PluginSettingDefinitionType = "textbox"
+	PluginSettingDefinitionTypePassword PluginSettingDefinitionType = "password"
+	PluginSettingDefinitionTypeDirPath  PluginSettingDefinitionType = "dirPath"
+	PluginSettingDefinitionTypeCheckBox PluginSettingDefinitionType = "checkbox"
+	PluginSettingDefinitionTypeSelect   PluginSettingDefinitionType = "select"
+	PluginSettingDefinitionTypeLabel    PluginSettingDefinitionType = "label"
+	PluginSettingDefinitionTypeNewLine  PluginSettingDefinitionType = "newline"
+	PluginSettingDefinitionTypeTable    PluginSettingDefinitionType = "table"
 
 	// Wox-internal setting types used by system plugins. These are not part
 	// of the public plugin API and are rendered by dedicated UI widgets.
@@ -154,14 +153,6 @@ func (n *PluginSettingDefinitionItem) UnmarshalJSON(b []byte) error {
 	case "table":
 		n.Type = PluginSettingDefinitionTypeTable
 		var v PluginSettingValueTable
-		unmarshalErr := json.Unmarshal([]byte(contentResult.String()), &v)
-		if unmarshalErr != nil {
-			return unmarshalErr
-		}
-		n.Value = &v
-	case "selectAIModel":
-		n.Type = PluginSettingDefinitionTypeSelectAIModel
-		var v PluginSettingValueSelectAIModel
 		unmarshalErr := json.Unmarshal([]byte(contentResult.String()), &v)
 		if unmarshalErr != nil {
 			return unmarshalErr
