@@ -348,7 +348,7 @@ func newApp(isDev bool, services contract.Services, windows *woxui.WindowManager
 		show: showAppParams{
 			WindowWidth:    defaultWidth,
 			MaxResultCount: defaultMaxResult,
-			StartPage:      "mru",
+			StartPage:      "blank",
 		},
 	}
 	app.terminalDesired.Store("")

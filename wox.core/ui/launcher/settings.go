@@ -496,7 +496,7 @@ func (a *App) reloadSettingsWithForms(forceForms bool) error {
 		data.LaunchMode = "continue"
 	}
 	if data.StartPage == "" {
-		data.StartPage = "mru"
+		data.StartPage = "blank"
 	}
 	if data.ShowPosition == "" {
 		data.ShowPosition = "mouse_screen"

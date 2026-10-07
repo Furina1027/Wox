@@ -426,7 +426,7 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 			return i18n.IsSupportedLangCode(string(code))
 		}),
 		LaunchMode:                         NewWoxSettingValue(store, "LaunchMode", LaunchModeContinue),
-		StartPage:                          NewWoxSettingValue(store, "StartPage", StartPageMRU),
+		StartPage:                          NewWoxSettingValue(store, "StartPage", StartPageBlank),
 		ShowPosition:                       NewWoxSettingValue(store, "ShowPosition", PositionTypeMouseScreen),
 		ShowDisplay:                        NewLocalWoxSettingValue(store, "ShowDisplay", ShowDisplayTarget{}),
 		AppWidth:                           NewWoxSettingValue(store, "AppWidth", 750),
