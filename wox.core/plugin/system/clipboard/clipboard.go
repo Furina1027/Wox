@@ -2483,7 +2483,7 @@ func (c *ClipboardPlugin) performCleanup(ctx context.Context) {
 // cleanupOrphanedCacheFiles removes cache files that no longer have corresponding database records
 func (c *ClipboardPlugin) cleanupOrphanedCacheFiles(ctx context.Context) {
 	cacheDir := util.GetLocation().GetImageCacheDirectory()
-	if !util.IsFileExists(cacheDir) {
+	if !util.IsDirExists(cacheDir) {
 		return
 	}
 
