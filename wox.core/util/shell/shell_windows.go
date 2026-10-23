@@ -52,6 +52,7 @@ type shellExecuteInfo struct {
 }
 
 type shellExecuteRequest struct {
+	Owner          uintptr
 	File           string
 	Verb           string
 	Parameters     string
@@ -62,6 +63,12 @@ type shellExecuteRequest struct {
 
 func Open(path string) error {
 	return executeShellVerb(path, "open")
+}
+
+// OpenWithOwner associates shell error UI and activation with a caller-supplied HWND.
+func OpenWithOwner(path string, owner uintptr) error {
+	_, err := shellExecute(shellExecuteRequest{Owner: owner, File: path, Verb: "open", Show: shellExecuteShowNormal})
+	return err
 }
 
 // OpenAsAdministrator launches an application through the Windows runas verb.
@@ -110,6 +117,10 @@ func executeShellVerb(path string, verb string) error {
 
 // shellExecute invokes ShellExecuteExW and optionally returns a wait callback.
 func shellExecute(req shellExecuteRequest) (WaitFunc, error) {
+	if isControlPanelTaskParsingName(req.File) {
+		return nil, executeControlPanelTask(req)
+	}
+
 	operationPtr, err := windows.UTF16PtrFromString(req.Verb)
 	if err != nil {
 		return nil, fmt.Errorf("encode ShellExecute verb: %w", err)
@@ -141,6 +152,7 @@ func shellExecute(req shellExecuteRequest) (WaitFunc, error) {
 		cbSize: uint32(unsafe.Sizeof(shellExecuteInfo{})),
 		// Keep the direct Shell path handling but let Windows finish DDE/delegate launch work asynchronously.
 		fMask:        mask,
+		hwnd:         req.Owner,
 		lpVerb:       operationPtr,
 		lpFile:       pathPtr,
 		lpParameters: parameterPtr,
@@ -195,9 +207,10 @@ func utf16PtrOrNil(value string) (*uint16, error) {
 }
 
 // shellExecuteMask routes namespace objects through their context-menu handlers so registered verbs are available.
+// Control Panel parsing names start with ::{CLSID} and need the same ID-list invoke path as shell: URLs.
 func shellExecuteMask(path string) uint32 {
 	mask := uint32(seeMaskAsyncOK)
-	if strings.HasPrefix(strings.ToLower(path), "shell:") {
+	if strings.HasPrefix(strings.ToLower(path), "shell:") || strings.HasPrefix(path, "::") {
 		mask |= seeMaskInvokeIDList
 	}
 	return mask

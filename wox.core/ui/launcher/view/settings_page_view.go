@@ -73,19 +73,25 @@ type SettingRowProps struct {
 	Width         float32
 	Background    woxui.Color
 	Disabled      bool
-	Kind          string
-	ControlWidth  float32
-	BrowseFile    bool
-	Editing       woxui.TextEditingState
-	Focused       bool
-	Window        *woxui.Window
-	Theme         woxcomponent.ControlTheme
-	OnTap         func()
-	OnChoiceTap   func(woxui.Rect)
-	OnFocus       func()
-	OnChanged     func(string)
-	OnKey         func(woxui.KeyEvent) bool
-	OnBrowse      func()
+	// PreserveLabelColor keeps policy-paused settings readable alongside their reason.
+	PreserveLabelColor bool
+	Kind               string
+	ControlWidth       float32
+	BrowseFile         bool
+	Editing            woxui.TextEditingState
+	Focused            bool
+	Window             *woxui.Window
+	Theme              woxcomponent.ControlTheme
+	OnTap              func()
+	OnChoiceTap        func(woxui.Rect)
+	OnFocus            func()
+	// OnBlur runs when a text field that owns the edit session loses focus.
+	OnBlur    func()
+	OnChanged func(string)
+	OnKey     func(woxui.KeyEvent) bool
+	OnBrowse  func()
+	// ControlAction is an optional action immediately before a switch.
+	ControlAction woxwidget.Widget
 }
 
 func SettingChoiceAnchorKey(id string) woxwidget.Key {
@@ -97,7 +103,9 @@ func SettingRow(props SettingRowProps) woxwidget.Widget {
 	fieldTheme := props.Theme
 	valueColor := props.Theme.Text
 	if props.Disabled {
-		fieldTheme.Text = props.Theme.TextSecondary
+		if !props.PreserveLabelColor {
+			fieldTheme.Text = props.Theme.TextSecondary
+		}
 		valueColor = props.Theme.TextSecondary
 	}
 	valueWidth := woxcomponent.SettingsChoiceControlWidth
@@ -106,6 +114,9 @@ func SettingRow(props SettingRowProps) woxwidget.Widget {
 		if props.ControlWidth > 0 {
 			valueWidth = props.ControlWidth
 		}
+	}
+	if props.ControlAction != nil {
+		valueWidth = max(valueWidth, float32(280))
 	}
 	labelWidth := max(float32(180), props.Width-valueWidth-32)
 	var valueField woxwidget.Widget
@@ -122,6 +133,11 @@ func SettingRow(props SettingRowProps) woxwidget.Widget {
 				if focused && props.OnFocus != nil {
 					props.OnFocus()
 				}
+				// props.Focused is this build's edit session. A later unfocus after the
+				// session has already closed must not commit the field again.
+				if !focused && props.Focused && props.OnBlur != nil {
+					props.OnBlur()
+				}
 			},
 		})
 		valueField = input
@@ -131,14 +147,18 @@ func SettingRow(props SettingRowProps) woxwidget.Widget {
 			})}}
 		}
 	case "bool":
-		valueField = woxwidget.Align{Width: valueWidth, Height: woxcomponent.SettingsControlHeight, Horizontal: 1, Vertical: 0.5, Child: woxcomponent.WoxSwitch(woxcomponent.SwitchProps{
+		valueField = woxcomponent.WoxSwitch(woxcomponent.SwitchProps{
 			ID: "setting-switch-" + props.ID, Label: props.Title, Value: props.Value == "true", Disabled: props.Disabled, Theme: props.Theme,
 			OnChange: func(bool) {
 				if props.OnTap != nil {
 					props.OnTap()
 				}
 			},
-		})}
+		})
+		if props.ControlAction != nil {
+			valueField = woxwidget.Flex{Axis: woxwidget.Horizontal, Gap: 12, CrossAxisAlignment: woxwidget.CrossAxisCenter, Children: []woxwidget.Widget{props.ControlAction, valueField}}
+		}
+		valueField = woxwidget.Align{Width: valueWidth, Height: woxcomponent.SettingsControlHeight, Horizontal: 1, Vertical: 0.5, Child: valueField}
 	case "button":
 		onTap := props.OnTap
 		if props.Disabled {

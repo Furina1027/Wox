@@ -193,7 +193,7 @@ type ignoredClipboardApplicationRow struct {
 
 func (c *ClipboardPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "5f815d98-27f5-488d-a756-c317ea39935b",
+		Id:            common.ClipboardPluginID,
 		Name:          "i18n:plugin_clipboard_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -222,7 +222,7 @@ func (c *ClipboardPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 		},
@@ -1269,7 +1269,7 @@ func (c *ClipboardPlugin) convertRecordToResult(ctx context.Context, record Clip
 	if record.ID != "" {
 		result.Id = record.ID
 	}
-	result.ScoreKey = record.ID
+	result.IdentityKey = record.ID
 	result.Actions = attachClipboardMRUContext(result.Actions, record.ID)
 	return result
 }

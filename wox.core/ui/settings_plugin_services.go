@@ -7,12 +7,13 @@ import (
 	"strings"
 
 	"wox/common"
+	"wox/network"
 	"wox/plugin"
+	"wox/plugin/thirdparty/settings"
 	"wox/setting"
 	"wox/ui/contract"
 	"wox/ui/dto"
 
-	"github.com/jinzhu/copier"
 	"github.com/samber/lo"
 )
 
@@ -27,6 +28,9 @@ func (s *CoreServices) Plugins(ctx context.Context, sessionID string, catalog co
 	case contract.PluginCatalogInstalled:
 		plugins, err = getInstalledPluginDTOs(ctx)
 	case contract.PluginCatalogStore:
+		if network.IsOffline() {
+			return nil, network.ErrOffline
+		}
 		plugins, err = getStorePluginDTOs(ctx)
 	default:
 		return nil, fmt.Errorf("unsupported plugin catalog %q", catalog)
@@ -45,7 +49,9 @@ func (s *CoreServices) Plugins(ctx context.Context, sessionID string, catalog co
 			Commands: append([]plugin.MetadataCommand(nil), item.Commands...), SupportedOS: append([]string(nil), item.SupportedOS...),
 			Features: append([]plugin.MetadataFeature(nil), item.Features...), Glances: append([]plugin.MetadataGlance(nil), item.Glances...),
 			IsSystem: item.IsSystem, IsDev: item.IsDev, IsInstalled: item.IsInstalled, IsDisable: item.IsDisable, IsUpgradable: item.IsUpgradable,
+			Store:              item.Store,
 			SettingDefinitions: item.SettingDefinitions,
+			HasNativeSettings:  item.HasNativeSettings,
 			Setting: contract.PluginSetting{
 				Disabled: item.Setting.Disabled, TriggerKeywords: append([]string(nil), item.Setting.TriggerKeywords...), Settings: cloneStringMap(item.Setting.Settings),
 			},
@@ -87,7 +93,21 @@ func (s *CoreServices) OperatePlugin(ctx context.Context, sessionID string, plug
 	}
 }
 
-// ExecutePluginSettingAction dispatches an explicit action owned by a system plugin.
+// OpenNativePluginSettings asks a compatibility plugin to open the settings window owned by its host.
+func (s *CoreServices) OpenNativePluginSettings(ctx context.Context, sessionID string, pluginID string) error {
+	ctx = uiServiceContext(ctx, sessionID)
+	instance, exists := findPluginInstance(pluginID)
+	if !exists {
+		return fmt.Errorf("plugin %q is not installed", pluginID)
+	}
+	opener, ok := instance.Plugin.(settings.Native)
+	if !ok || !opener.HasNativeSettings() {
+		return fmt.Errorf("plugin %q does not open its own settings window", pluginID)
+	}
+	return opener.OpenNativeSettings(ctx)
+}
+
+// ExecutePluginSettingAction dispatches an explicit action owned by the plugin.
 func (s *CoreServices) ExecutePluginSettingAction(ctx context.Context, sessionID string, pluginID string, actionID string) error {
 	ctx = uiServiceContext(ctx, sessionID)
 	instance, exists := findPluginInstance(pluginID)
@@ -139,6 +159,18 @@ func (s *CoreServices) UpdatePluginSettings(ctx context.Context, sessionID strin
 			}
 			instance.Setting.TriggerKeywords.Set(keywords)
 		default:
+			// System plugins can own settings whose persistence includes a coordinated workflow.
+			if handler, ok := instance.Plugin.(interface {
+				HandleSettingUpdate(context.Context, string, string) (bool, error)
+			}); ok {
+				handled, err := handler.HandleSettingUpdate(ctx, key, value)
+				if err != nil {
+					return err
+				}
+				if handled {
+					continue
+				}
+			}
 			isPlatformSpecific := false
 			for _, settingDefinition := range instance.Metadata.SettingDefinitions {
 				if settingDefinition.Value != nil && settingDefinition.Value.GetKey() == key {
@@ -175,10 +207,7 @@ func getInstalledPluginDTOs(ctx context.Context) ([]dto.PluginDto, error) {
 // getStorePluginDTOs builds the legacy DTO catalog with installation state.
 func getStorePluginDTOs(ctx context.Context) ([]dto.PluginDto, error) {
 	manifests := plugin.GetStoreManager().GetStorePluginManifests(ctx)
-	plugins := make([]dto.PluginDto, len(manifests))
-	if err := copier.Copy(&plugins, &manifests); err != nil {
-		return nil, err
-	}
+	plugins := storeManifestDTOs(manifests)
 
 	for index, storePlugin := range plugins {
 		instance, installed := lo.Find(plugin.GetPluginManager().GetPluginInstances(), func(item *plugin.Instance) bool {

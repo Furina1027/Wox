@@ -11,47 +11,45 @@ import (
 var (
 	pinyinCache     sync.Map // map[string][]PinyinSegment
 	pinyinCacheSize atomic.Int32
+	pinyinCacheMu   sync.Mutex
 
-	// pinyinDict is the shared character table. It is built on the first Chinese
-	// lookup and dropped after a long hide so the map buckets do not stay resident.
+	// pinyinDict is a compact shared character table. It is built on the first
+	// Chinese lookup and dropped after a long hide with its decoded backing text.
 	pinyinDictMu sync.Mutex
-	pinyinDict   map[int][]string
+	pinyinDict   atomic.Pointer[pinyinDictionary]
 )
 
 const (
 	maxPinyinCacheSize = 4096 // Maximum cache entries
 )
 
-// getCharPinyin returns pre-processed pinyin variants for a single rune
-// If the rune is a Chinese character, returns its pinyin list (no tones)
-// Otherwise, returns the character itself within a slice
-func getCharPinyin(r rune) []string {
-	if pinyins, ok := LookupCharPinyin(r); ok {
-		return pinyins
-	}
-	// Non-Chinese character: return as-is
-	return []string{string(r)}
-}
-
 // LookupCharPinyin returns the tone-stripped syllables for one Han character.
 // The table is loaded on first use.
 func LookupCharPinyin(r rune) ([]string, bool) {
-	pinyinDictMu.Lock()
-	dict := pinyinDict
+	syllables, _, ok := lookupPinyinReading(r)
+	return syllables, ok
+}
+
+// lookupPinyinReading lends syllables and their precomputed initials together.
+func lookupPinyinReading(r rune) ([]string, []rune, bool) {
+	dict := pinyinDict.Load()
 	if dict == nil {
-		dict = loadPinyinDict()
-		pinyinDict = dict
+		pinyinDictMu.Lock()
+		dict = pinyinDict.Load()
+		if dict == nil {
+			dict = loadPinyinDict()
+			pinyinDict.Store(dict)
+		}
+		pinyinDictMu.Unlock()
 	}
-	pinyinDictMu.Unlock()
-	pinyins, ok := dict[int(r)]
-	return pinyins, ok
+	return dict.lookup(r)
 }
 
 // ReleasePinyinDictionary drops the shared pinyin table after the launcher has
 // stayed hidden. The next Chinese lookup rebuilds it.
 func ReleasePinyinDictionary() {
 	pinyinDictMu.Lock()
-	pinyinDict = nil
+	pinyinDict.Store(nil)
 	pinyinDictMu.Unlock()
 }
 
@@ -112,15 +110,10 @@ func getPinYin(term string) []PinyinSegment {
 		if unicode.Is(unicode.Han, r) {
 			flushASCII()
 
-			// Handle Chinese char
-			pinyins := getCharPinyin(r)
-
-			// Compute first letters
-			firstLetters := make([]rune, len(pinyins))
-			for i, p := range pinyins {
-				if len(p) > 0 {
-					firstLetters[i] = toLowerASCII(rune(p[0]))
-				}
+			pinyins, firstLetters, known := lookupPinyinReading(r)
+			if !known {
+				pinyins = []string{string(r)}
+				firstLetters = []rune{toLowerASCII(rune(pinyins[0][0]))}
 			}
 
 			segments = append(segments, PinyinSegment{
@@ -135,16 +128,16 @@ func getPinYin(term string) []PinyinSegment {
 	}
 	flushASCII()
 
-	// Store in cache (simple LRU-like: clear if too large)
-	if pinyinCacheSize.Load() >= maxPinyinCacheSize {
-		// Simple eviction: clear all
-		pinyinCache.Clear()
-		pinyinCacheSize.Store(0)
+	// A full-index scan can exceed this bound by only a few names. Clearing
+	// every entry at capacity made each subsequent scan rebuild the entire cache.
+	// Keep admitted entries until the existing idle-release lifecycle clears them.
+	pinyinCacheMu.Lock()
+	if pinyinCacheSize.Load() < maxPinyinCacheSize {
+		if _, loaded := pinyinCache.LoadOrStore(strings.Clone(term), segments); !loaded {
+			pinyinCacheSize.Add(1)
+		}
 	}
-	// Cache keys must own their bytes because callers may pass a short-lived
-	// view over a memory-mapped index or a much larger backing buffer.
-	pinyinCache.Store(strings.Clone(term), segments)
-	pinyinCacheSize.Add(1)
+	pinyinCacheMu.Unlock()
 
 	return segments
 }
@@ -153,6 +146,8 @@ func getPinYin(term string) []PinyinSegment {
 // Entries are cheap to recompute per term, so trading a cold lookup after the
 // next show for a smaller idle footprint is worthwhile.
 func ReleaseIdleCaches() {
+	pinyinCacheMu.Lock()
+	defer pinyinCacheMu.Unlock()
 	pinyinCache.Clear()
 	pinyinCacheSize.Store(0)
 }

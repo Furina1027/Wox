@@ -132,7 +132,7 @@
     "Name": "Spotify",
     "Author": "Wox-launcher",
     "Version": "0.0.3",
-    "MinWoxVersion": "2.0.0",
+    "MinWoxVersion": "2.0.3",
     "Runtime": "nodejs",
     "Description": "Spotify integration",
     "IconUrl": "https://raw.githubusercontent.com/Wox-launcher/Wox.Plugin.Spotify/main/images/app.png",
@@ -147,7 +147,7 @@
       "Linux"
     ],
     "DateCreated": "2024-07-05 15:00:00",
-    "DateUpdated": "2026-09-06 03:06:30"
+    "DateUpdated": "2026-10-15 15:05:45"
   },
   {
     "Id": "9575a1fc-d81b-4947-bcce-bd075f118f3e",
@@ -513,7 +513,7 @@
     "Name": "Iconify",
     "Author": "Wox-launcher",
     "Version": "0.1.1",
-    "MinWoxVersion": "2.0.0",
+    "MinWoxVersion": "2.4.5",
     "Runtime": "python",
     "Description": "i18n:plugin_description",
     "IconUrl": "https://raw.githubusercontent.com/Wox-launcher/Wox.Plugin.Iconify/master/image/app.png",
@@ -528,7 +528,7 @@
       "Linux"
     ],
     "DateCreated": "2026-03-08 15:56:00",
-    "DateUpdated": "2026-09-30 06:10:10",
+    "DateUpdated": "2026-10-15 15:05:52",
     "I18n": {
       "en_US": {
         "plugin_description": "Search Iconify icons - Home of open source icon sets"
@@ -543,7 +543,7 @@
     "Name": "i18n:plugin_name",
     "Author": "Wox-launcher",
     "Version": "0.6.1",
-    "MinWoxVersion": "2.0.0",
+    "MinWoxVersion": "2.4.4",
     "Runtime": "nodejs",
     "Description": "i18n:plugin_desc",
     "IconUrl": "https://raw.githubusercontent.com/Wox-launcher/Wox.Plugin.AIQuota/master/images/app.svg",
@@ -558,7 +558,7 @@
       "Linux"
     ],
     "DateCreated": "2026-03-08 15:56:00",
-    "DateUpdated": "2026-09-19 03:06:29",
+    "DateUpdated": "2026-10-15 15:05:52",
     "I18n": {
       "en_US": {
         "plugin_name": "AI Quota",
@@ -701,7 +701,7 @@
     "Name": "i18n:plugin_name",
     "Author": "qianlifeng",
     "Version": "0.0.2",
-    "MinWoxVersion": "2.0.0",
+    "MinWoxVersion": "2.4.5",
     "Runtime": "python",
     "Description": "i18n:plugin_description",
     "IconUrl": "https://raw.githubusercontent.com/qianlifeng/Wox.Plugin.Unsplash/main/images/app.png",
@@ -716,7 +716,7 @@
       "Linux"
     ],
     "DateCreated": "2026-04-26 15:15:06",
-    "DateUpdated": "2026-09-30 09:06:26",
+    "DateUpdated": "2026-10-15 15:05:55",
     "I18n": {
       "en_US": {
         "plugin_name": "Unsplash",
@@ -732,8 +732,8 @@
     "Id": "263fa95c-db99-4dc8-be68-784b5ae421f8",
     "Name": "i18n:plugin_name",
     "Author": "stmluyuer",
-    "Version": "0.1.1",
-    "MinWoxVersion": "2.0.0",
+    "Version": "0.1.4",
+    "MinWoxVersion": "2.0.4",
     "Runtime": "nodejs",
     "Description": "i18n:plugin_description",
     "IconUrl": "https://raw.githubusercontent.com/stmluyuer/Wox.Plugin.LuxTranslate/main/images/app.svg",
@@ -752,7 +752,7 @@
       "Linux"
     ],
     "DateCreated": "2026-04-28 13:05:57",
-    "DateUpdated": "2026-09-24 03:06:45",
+    "DateUpdated": "2026-10-19 03:07:15",
     "I18n": {
       "en_US": {
         "plugin_name": "LuxTranslate",
@@ -801,7 +801,7 @@
     "Name": "i18n:plugin_name",
     "Author": "qianlifeng",
     "Version": "0.0.1",
-    "MinWoxVersion": "2.0.0",
+    "MinWoxVersion": "2.0.4",
     "Runtime": "nodejs",
     "Description": "i18n:plugin_description",
     "IconUrl": "https://raw.githubusercontent.com/qianlifeng/Wox.Plugin.Rimage/main/images/app.svg",
@@ -816,7 +816,7 @@
       "Linux"
     ],
     "DateCreated": "2026-05-06 19:48:30",
-    "DateUpdated": "2026-05-06 19:48:30",
+    "DateUpdated": "2026-10-15 15:05:57",
     "I18n": {
       "en_US": {
         "plugin_name": "RImage",
@@ -1204,7 +1204,7 @@
     "Id": "9d7b4e96-a81d-44a3-a75a-bc828cf5668e",
     "Name": "i18n:plugin_name",
     "Author": "Myraxion",
-    "Version": "1.1.0",
+    "Version": "1.2.0",
     "MinWoxVersion": "2.4.2",
     "Runtime": "python",
     "Description": "i18n:plugin_description",
@@ -1220,7 +1220,7 @@
       "Linux"
     ],
     "DateCreated": "2026-09-05 22:20:00",
-    "DateUpdated": "2026-09-07 17:12:53",
+    "DateUpdated": "2026-10-21 09:06:57",
     "I18n": {
       "en_US": {
         "plugin_name": "Linkding",
@@ -1474,7 +1474,7 @@
     "Name": "i18n:plugin_name",
     "Author": "qianlifeng",
     "Version": "1.0.0",
-    "MinWoxVersion": "2.4.5",
+    "MinWoxVersion": "2.4.2",
     "Runtime": "nodejs",
     "Description": "i18n:plugin_description",
     "IconUrl": "https://gist.github.com/user-attachments/assets/084b54d6-a803-4765-b9e4-f691a1d02889",
@@ -1489,7 +1489,7 @@
       "Linux"
     ],
     "DateCreated": "2026-09-23 22:07:37",
-    "DateUpdated": "2026-09-23 22:07:37",
+    "DateUpdated": "2026-10-15 15:06:05",
     "I18n": {
       "en_US": {
         "plugin_name": "Stock",
@@ -1670,6 +1670,214 @@
       "zh_CN": {
         "plugin_name": "Clash Verge",
         "plugin_description": "查看本机 Clash Verge 运行状态，并切换代理节点。"
+      }
+    }
+  },
+  {
+    "Id": "ad468a1d-fdb5-4fb0-88a9-d6778bb11d96",
+    "Name": "Wox.Plugin.Manasikāra",
+    "Author": "Archetype444",
+    "Version": "2.0.1",
+    "MinWoxVersion": "2.4.5",
+    "Runtime": "nodejs",
+    "Description": "Continuous focus and deep focus, three Pomodoro variants, meditation and countdown timers with configurable singing-bowl chimes and activity prompts.",
+    "IconUrl": "https://raw.githubusercontent.com/Archetype444/Wox.Plugin.Manasikara/main/assets/icon.svg",
+    "Website": "https://github.com/Archetype444/Wox.Plugin.Manasikara",
+    "DownloadUrl": "https://github.com/Archetype444/Wox.Plugin.Manasikara/releases/download/v2.0.1/Manasikara-v2.0.1.wox",
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-11 18:38:36",
+    "DateUpdated": "2026-10-11 18:38:36",
+    "ScreenshotUrls": [
+      "https://github.com/user-attachments/assets/f70a5376-fb4e-40b5-bb34-d14d56f211c9",
+      "https://github.com/user-attachments/assets/5deec5d6-1a29-4816-a96e-7e96e67a51e9",
+      "https://github.com/user-attachments/assets/77ac4d4e-692c-44e2-bd92-7e70145fa3e4",
+      "https://github.com/user-attachments/assets/edfa8e00-5d80-44df-a662-e9c4bd6be299",
+      "https://github.com/user-attachments/assets/c2f5aeef-1310-4496-b82c-87e56f7aab03"
+    ]
+  },
+  {
+    "Id": "44ebc063-a997-473b-a70e-885fa28170ee",
+    "Name": "Nbnhhsh",
+    "Author": "dragonish",
+    "Version": "1.1.0",
+    "MinWoxVersion": "2.0.4",
+    "Runtime": "python",
+    "Description": "「能不能好好说话？」拼音首字母缩写翻译工具",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.Nbnhhsh/main/images/icon.png",
+    "Website": "https://github.com/dragonish/Wox.Plugin.Nbnhhsh",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.Nbnhhsh/releases/latest/download/wox.plugin.nbnhhsh.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.Nbnhhsh/main/assets/preview.jpg"
+    ],
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-13 21:19:11",
+    "DateUpdated": "2026-10-21 12:08:07"
+  },
+  {
+    "Id": "1ed04e7b-5a94-481e-ac27-74c11e34ec63",
+    "Name": "PowerToys",
+    "Author": "dragonish",
+    "Version": "1.1.0",
+    "MinWoxVersion": "2.0.0",
+    "Runtime": "python",
+    "Description": "i18n:plugin_desc",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.PowerToys/make/images/powertoys.png",
+    "Website": "https://github.com/dragonish/Wox.Plugin.PowerToys",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.PowerToys/releases/latest/download/wox.plugin.powertoys.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.PowerToys/make/assets/screenshot.jpg"
+    ],
+    "SupportedOS": [
+      "Windows"
+    ],
+    "DateCreated": "2026-10-13 23:35:27",
+    "DateUpdated": "2026-10-21 15:05:56",
+    "I18n": {
+      "en_US": {
+        "plugin_desc": "Allows the user to launch some PowerToys from Wox."
+      },
+      "zh_CN": {
+        "plugin_desc": "允许用户从 Wox 启动某些 PowerToys 程序。"
+      }
+    }
+  },
+  {
+    "Id": "84a696e0-e250-4cf4-b9cc-e45115bb4119",
+    "Name": "QRCode",
+    "Author": "dragonish",
+    "Version": "1.2.0",
+    "MinWoxVersion": "2.4.5",
+    "Runtime": "python",
+    "Description": "i18n:plugin_desc",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.QRCode/main/images/app.svg",
+    "Website": "https://github.com/dragonish/Wox.Plugin.QRCode",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.QRCode/releases/latest/download/wox.plugin.qrcode.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.QRCode/main/assets/screenshot.jpg"
+    ],
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-14 20:40:31",
+    "DateUpdated": "2026-10-15 12:08:39",
+    "I18n": {
+      "en_US": {
+        "plugin_desc": "Generate a QR Code / Screenshot to scan and recognize the QR Code."
+      },
+      "zh_CN": {
+        "plugin_desc": "生成二维码 / 截图识别二维码。"
+      }
+    }
+  },
+  {
+    "Id": "24fe7e7c-60c7-4b57-82e7-f30e6a29e040",
+    "Name": "i18n:plugin_name",
+    "Author": "dragonish",
+    "Version": "1.0.0",
+    "MinWoxVersion": "2.0.0",
+    "Runtime": "python",
+    "Description": "i18n:plugin_description",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.PortGenerator/main/images/app.svg",
+    "Website": "https://github.com/dragonish/Wox.Plugin.PortGenerator",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.PortGenerator/releases/latest/download/wox.plugin.portgenerator.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.PortGenerator/main/assets/screenshot.jpg"
+    ],
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-15 22:44:32",
+    "DateUpdated": "2026-10-15 22:44:32",
+    "I18n": {
+      "en_US": {
+        "plugin_name": "PortGenerator",
+        "plugin_description": "Check port usage / Generate random ports."
+      },
+      "zh_CN": {
+        "plugin_name": "端口生成器",
+        "plugin_description": "检查端口占用 / 生成随机可用端口。"
+      }
+    }
+  },
+  {
+    "Id": "242ec423-0ac0-47d9-8c93-e72c4d509eb2",
+    "Name": "i18n:plugin_name",
+    "Author": "dragonish",
+    "Version": "1.0.1",
+    "MinWoxVersion": "2.4.7",
+    "Runtime": "nodejs",
+    "Description": "i18n:plugin_description",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.ASCIIArtGenerator/main/images/app.svg",
+    "Website": "https://github.com/dragonish/Wox.Plugin.ASCIIArtGenerator",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.ASCIIArtGenerator/releases/latest/download/wox.plugin.asciiartgenerator.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.ASCIIArtGenerator/main/assets/render.jpg",
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.ASCIIArtGenerator/main/assets/fonts.jpg",
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.ASCIIArtGenerator/main/assets/3d.jpg"
+    ],
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-21 19:59:21",
+    "DateUpdated": "2026-10-23 00:14:04",
+    "I18n": {
+      "en_US": {
+        "plugin_name": "ASCII Art Generator",
+        "plugin_description": "Generate ASCII art strings."
+      },
+      "zh_CN": {
+        "plugin_name": "ASCII 艺术字生成器",
+        "plugin_description": "生成 ASCII 艺术字符串。"
+      }
+    }
+  },
+  {
+    "Id": "9f479da0-2c9f-412c-80f1-02f2bdc10263",
+    "Name": "i18n:plugin_name",
+    "Author": "dragonish",
+    "Version": "1.0.0",
+    "MinWoxVersion": "2.4.5",
+    "Runtime": "nodejs",
+    "Description": "i18n:plugin_desc",
+    "IconUrl": "https://raw.githubusercontent.com/dragonish/Wox.Plugin.Kaomoji/main/images/app.svg",
+    "Website": "https://github.com/dragonish/Wox.Plugin.Kaomoji",
+    "DownloadUrl": "https://github.com/dragonish/Wox.Plugin.Kaomoji/releases/latest/download/wox.plugin.kaomoji.wox",
+    "ScreenshotUrls": [
+      "https://raw.githubusercontent.com/dragonish/Wox.Plugin.Kaomoji/main/assets/screenshot.jpg"
+    ],
+    "SupportedOS": [
+      "Windows",
+      "Linux",
+      "Darwin"
+    ],
+    "DateCreated": "2026-10-22 21:03:56",
+    "DateUpdated": "2026-10-22 21:03:56",
+    "I18n": {
+      "en_US": {
+        "plugin_name": "Kaomoji",
+        "plugin_desc": "Search and copy kaomoji."
+      },
+      "ja_JP": {
+        "plugin_name": "顔文字",
+        "plugin_desc": "顔文字を検索してコピーします。"
+      },
+      "zh_CN": {
+        "plugin_name": "颜文字",
+        "plugin_desc": "搜索并复制颜文字。"
       }
     }
   }

@@ -7,12 +7,13 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestPluginListEntriesGroupInstalledAndStayFlatInStore(t *testing.T) {
+func TestPluginListEntriesGroupInstalledAndStoreCatalogs(t *testing.T) {
 	app := &App{translations: map[string]string{
 		"ui_update":                          "Update",
 		"ui_disabled":                        "Disabled",
 		"ui_setting_plugin_section_enabled":  "Enabled",
 		"ui_setting_plugin_section_disabled": "Disabled",
+		"ui_plugin_store_wox":                "Wox Store",
 	}}
 	installed := app.pluginListEntries(settingsSnapshot{
 		plugins: pluginSettingsSnapshot{
@@ -25,7 +26,7 @@ func TestPluginListEntriesGroupInstalledAndStayFlatInStore(t *testing.T) {
 	}, []filteredPlugin{
 		{index: 0, plugin: pluginSettingsPlugin{ID: "off", Name: "Off", Version: "1.0.0", Author: "A", IsDisable: true, IsUpgradable: true}},
 		{index: 1, plugin: pluginSettingsPlugin{ID: "on", Name: "On", Version: "2.0.0", Author: "B"}},
-	})
+	}, 1)
 	if len(installed) != 4 {
 		t.Fatalf("installed entries = %d, want 4", len(installed))
 	}
@@ -46,19 +47,54 @@ func TestPluginListEntriesGroupInstalledAndStayFlatInStore(t *testing.T) {
 		plugins: pluginSettingsSnapshot{
 			PluginsStore: true,
 			Plugins: []pluginSettingsPlugin{
-				{ID: "off", Name: "Off", Version: "1.0.0", Author: "A", IsDisable: true},
-				{ID: "on", Name: "On", Version: "2.0.0", Author: "B"},
+				{ID: "flow-b", Name: "Beta", Version: "1.0.0", Author: "A", Store: "flow"},
+				{ID: "wox-z", Name: "Zinc", Version: "2.0.0", Author: "B", Store: "wox"},
+				{ID: "flow-a", Name: "Alpine", Version: "1.0.0", Author: "C", Store: "flow", IsDisable: true},
+				{ID: "wox-a", Name: "Alpha", Version: "1.0.0", Author: "D"},
 			},
 		},
 	}, []filteredPlugin{
-		{index: 0, plugin: pluginSettingsPlugin{ID: "off", Name: "Off", Version: "1.0.0", Author: "A", IsDisable: true}},
-		{index: 1, plugin: pluginSettingsPlugin{ID: "on", Name: "On", Version: "2.0.0", Author: "B"}},
-	})
-	if len(store) != 2 || store[0].Header != "" || store[1].Header != "" {
-		t.Fatalf("store entries = %#v, want a flat catalog", store)
+		{index: 0, plugin: pluginSettingsPlugin{ID: "flow-b", Name: "Beta", Version: "1.0.0", Author: "A", Store: "flow"}},
+		{index: 1, plugin: pluginSettingsPlugin{ID: "wox-z", Name: "Zinc", Version: "2.0.0", Author: "B", Store: "wox"}},
+		{index: 2, plugin: pluginSettingsPlugin{ID: "flow-a", Name: "Alpine", Version: "1.0.0", Author: "C", Store: "flow", IsDisable: true}},
+		{index: 3, plugin: pluginSettingsPlugin{ID: "wox-a", Name: "Alpha", Version: "1.0.0", Author: "D"}},
+	}, 1)
+	if len(store) != 6 {
+		t.Fatalf("store entries = %d, want 2 headers and 4 plugins", len(store))
 	}
-	if store[0].Item.ID != "off" || store[0].Item.Status != "1.0.0  A" || strings.Contains(store[0].Item.Status, "Disabled") {
-		t.Fatalf("store disabled status = %q", store[0].Item.Status)
+	if store[0].Header != "Wox Store" || store[0].ID != "wox" || !store[0].HasHeaderIcon {
+		t.Fatalf("wox header = %#v", store[0])
+	}
+	if store[1].Item.ID != "wox-a" || store[2].Item.ID != "wox-z" {
+		t.Fatalf("wox plugins = %s %s", store[1].Item.ID, store[2].Item.ID)
+	}
+	if store[3].Header != "Flow Store" || store[3].ID != "flow" || !store[3].HasHeaderIcon {
+		t.Fatalf("flow header = %#v", store[3])
+	}
+	if store[4].Item.ID != "flow-a" || store[4].Item.Status != "1.0.0  C" || strings.Contains(store[4].Item.Status, "Disabled") {
+		t.Fatalf("flow status = %#v", store[4].Item)
+	}
+	if store[5].Item.ID != "flow-b" {
+		t.Fatalf("flow plugins = %s", store[5].Item.ID)
+	}
+	if installed[1].Item.Icon != nil || store[1].Item.Icon != nil {
+		t.Fatal("catalog rows must leave icons unresolved until the row is built")
+	}
+}
+
+func TestPluginListEntriesOmitHeaderWhenOneStoreRemains(t *testing.T) {
+	app := &App{translations: map[string]string{"ui_plugin_store_wox": "Wox Store"}}
+	entries := app.pluginListEntries(settingsSnapshot{
+		plugins: pluginSettingsSnapshot{PluginsStore: true},
+	}, []filteredPlugin{
+		{index: 0, plugin: pluginSettingsPlugin{ID: "wox-z", Name: "Zinc", Store: "wox"}},
+		{index: 1, plugin: pluginSettingsPlugin{ID: "wox-a", Name: "Alpha"}},
+	}, 1)
+	if len(entries) != 2 || entries[0].Header != "" || entries[1].Header != "" {
+		t.Fatalf("single-store entries = %#v, want plugin rows without a header", entries)
+	}
+	if entries[0].Item.ID != "wox-a" || entries[1].Item.ID != "wox-z" {
+		t.Fatalf("single-store order = %s %s", entries[0].Item.ID, entries[1].Item.ID)
 	}
 }
 
@@ -73,7 +109,7 @@ func TestPluginListEntriesOmitScriptBadge(t *testing.T) {
 			{plugin: pluginSettingsPlugin{ID: "script", Runtime: "Script"}},
 			{plugin: pluginSettingsPlugin{ID: "system", IsSystem: true}},
 			{plugin: pluginSettingsPlugin{ID: "dev", Runtime: "Script", IsDev: true}},
-		})
+		}, 1)
 		badges := map[string]string{}
 		for _, entry := range entries {
 			if entry.Header == "" {
@@ -88,8 +124,20 @@ func TestPluginRuntimeLabelOmitsNativeGoHost(t *testing.T) {
 	if got := pluginRuntimeLabel("Go"); got != "" {
 		t.Fatalf("Go runtime label = %q, want empty so native plugins hide the chip", got)
 	}
-	if got := pluginRuntimeLabel("python"); got != "Python" {
-		t.Fatalf("python runtime label = %q, want Python", got)
+	if got := pluginRuntimeLabel("python"); got != "Wox Python" {
+		t.Fatalf("python runtime label = %q, want Wox Python", got)
+	}
+	if got := pluginRuntimeLabel("nodejs"); got != "Wox Node.js" {
+		t.Fatalf("nodejs runtime label = %q, want Wox Node.js", got)
+	}
+	if got := pluginRuntimeLabel("script"); got != "Wox Script" {
+		t.Fatalf("script runtime label = %q, want Wox Script", got)
+	}
+	if got := pluginRuntimeLabel("FLOWJSONRPC"); got != "Flow JSON-RPC" {
+		t.Fatalf("jsonrpc runtime label = %q, want Flow JSON-RPC", got)
+	}
+	if got := pluginRuntimeLabel("FLOWDOTNET"); got != "Flow .NET" {
+		t.Fatalf("dotnet runtime label = %q, want Flow .NET", got)
 	}
 }
 

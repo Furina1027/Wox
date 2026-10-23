@@ -8,6 +8,63 @@ import (
 	woxwidget "wox/ui/widget"
 )
 
+// TestSettingsChoiceInputKeys checks IME and key releases through the focused search field.
+func TestSettingsChoiceInputKeys(t *testing.T) {
+	chosen, cancelled := -1, false
+	host := woxwidget.NewHost(func(woxui.FrameInfo) woxwidget.Widget {
+		return SettingsChoiceView(SettingsChoiceProps{
+			ID: "currency", Width: 640, Height: 480, Filterable: true, CurrentValue: "USD",
+			Choices:  []SettingsChoice{{Value: "USD", Label: "USD"}, {Value: "CNY", Label: "CNY"}},
+			OnChoose: func(index int) { chosen = index }, OnCancel: func() { cancelled = true },
+		})
+	})
+	defer host.Dispose()
+	host.AttachServices(actionSearchHostServices{})
+	frame := woxui.FrameInfo{Size: woxui.Size{Width: 640, Height: 480}, PixelSize: woxui.PixelSize{Width: 640, Height: 480}, Scale: 1}
+	host.Frame(&woxui.DisplayList{}, frame)
+	for _, event := range []woxui.KeyEvent{{Down: true, Composing: true}, {Down: false}} {
+		for _, key := range []woxui.Key{woxui.KeyEnter, woxui.KeyEscape, woxui.KeyArrowUp, woxui.KeyArrowDown} {
+			event.Key = key
+			if host.Key(event) || chosen != -1 || cancelled {
+				t.Fatalf("key %s (down=%t, composing=%t) changed the dropdown", key, event.Down, event.Composing)
+			}
+		}
+	}
+	if !host.Key(woxui.KeyEvent{Key: woxui.KeyEnter, Down: true}) || chosen != 0 {
+		t.Fatal("ignored keys changed the selection")
+	}
+	if !host.Key(woxui.KeyEvent{Key: woxui.KeyArrowDown, Down: true}) || !host.Key(woxui.KeyEvent{Key: woxui.KeyEnter, Down: true}) || chosen != 1 {
+		t.Fatal("Down and Enter did not select CNY")
+	}
+	if !host.Key(woxui.KeyEvent{Key: woxui.KeyArrowUp, Down: true}) || !host.Key(woxui.KeyEvent{Key: woxui.KeyEnter, Down: true}) || chosen != 0 {
+		t.Fatal("Up and Enter did not select USD")
+	}
+	if !host.Key(woxui.KeyEvent{Key: woxui.KeyEscape, Down: true}) || !cancelled {
+		t.Fatal("Escape did not close the dropdown")
+	}
+}
+
+// TestSettingsChoiceCurrencySearch checks code matching and clearing the search.
+func TestSettingsChoiceCurrencySearch(t *testing.T) {
+	choices := []SettingsChoice{
+		{Value: "auto", Label: "Auto"}, {Value: "BRL", Label: "BRL"},
+		{Value: "EUR", Label: "EUR"}, {Value: "USD", Label: "USD"},
+	}
+	for query, want := range map[string]string{"brl": "BRL", " UsD ": "USD", "ur": "EUR", "auto": "auto", "xyz": ""} {
+		visible := filteredSettingsChoices(choices, query)
+		if want == "" {
+			if len(visible) != 0 {
+				t.Fatalf("%q: expected no matches", query)
+			}
+		} else if len(visible) != 1 || visible[0].choice.Value != want {
+			t.Fatalf("%q: expected %s", query, want)
+		}
+	}
+	if len(filteredSettingsChoices(choices, "")) != len(choices) {
+		t.Fatal("clearing search did not restore the list")
+	}
+}
+
 func TestFilteredSettingsChoicesInsertsGroupHeaders(t *testing.T) {
 	choices := []SettingsChoice{
 		{Value: "groq", Label: "groq", Group: "API"},
@@ -364,4 +421,60 @@ func settingsChoiceRowTrailing(row woxwidget.Stack) woxwidget.Text {
 		}
 	}
 	return woxwidget.Text{}
+}
+
+func TestMultiSettingsChoiceKeepsHighlight(t *testing.T) {
+	choices := []SettingsChoice{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}, {Value: "c", Label: "C"}}
+	visible := filteredSettingsChoices(choices, "")
+	props := SettingsChoiceProps{CurrentValue: "b", SelectedValues: []string{"b"}, Choices: choices}
+	state := &settingsChoiceState{}
+	state.InitState(woxwidget.StateContext{}, props)
+	if state.selected != settingsChoiceExactIndex(visible, "b") {
+		t.Fatalf("initial highlight = %d", state.selected)
+	}
+	next := props
+	next.CurrentValue = "b,c"
+	next.SelectedValues = []string{"b", "c"}
+	state.DidUpdateWidget(woxwidget.StateContext{}, props, next)
+	if state.selected != settingsChoiceExactIndex(visible, "b") {
+		t.Fatalf("multi highlight moved to %d", state.selected)
+	}
+
+	joined := SettingsChoiceProps{CurrentValue: "b,c", SelectedValues: []string{"b", "c"}, Choices: choices}
+	opened := &settingsChoiceState{}
+	opened.InitState(woxwidget.StateContext{}, joined)
+	if opened.selected != settingsChoiceExactIndex(visible, "b") {
+		t.Fatalf("joined value highlighted %d, want b", opened.selected)
+	}
+
+	single := SettingsChoiceProps{CurrentValue: "b", Choices: choices}
+	singleState := &settingsChoiceState{}
+	singleState.InitState(woxwidget.StateContext{}, single)
+	updated := single
+	updated.CurrentValue = "c"
+	singleState.DidUpdateWidget(woxwidget.StateContext{}, single, updated)
+	if singleState.selected != settingsChoiceExactIndex(visible, "c") {
+		t.Fatalf("single highlight = %d, want c", singleState.selected)
+	}
+}
+
+func TestMultiSettingsChoiceMenuStaysAnchored(t *testing.T) {
+	choices := []SettingsChoice{{Value: "a", Label: "A"}, {Value: "b", Label: "B"}}
+	anchor := woxui.Rect{X: 40, Y: 300, Width: 220, Height: 36}
+	visible := filteredSettingsChoices(choices, "")
+	listHeight := settingsChoiceContentHeight(visible)
+	menuHeight := settingsChoiceMenuPadding*2 + listHeight
+	props := SettingsChoiceProps{Width: 800, Height: 800, Anchor: anchor, Choices: choices, CurrentValue: "a", SelectedValues: []string{"a"}}
+	top := settingsChoiceMenuTop(props, anchor, menuHeight, listHeight)
+	props.CurrentValue = "a,b"
+	props.SelectedValues = []string{"a", "b"}
+	if got := settingsChoiceMenuTop(props, anchor, menuHeight, listHeight); got != top {
+		t.Fatalf("multi menu moved from %.0f to %.0f", top, got)
+	}
+	single := SettingsChoiceProps{Width: 800, Height: 800, Anchor: anchor, Choices: choices, CurrentValue: "a"}
+	first := settingsChoiceMenuTop(single, anchor, menuHeight, listHeight)
+	single.CurrentValue = "b"
+	if settingsChoiceMenuTop(single, anchor, menuHeight, listHeight) == first {
+		t.Fatal("single-select menu should follow the selected row")
+	}
 }

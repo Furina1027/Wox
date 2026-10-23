@@ -1,13 +1,136 @@
 package launcher
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"testing"
+	"time"
+	"wox/setting/definition"
 
+	"wox/plugin"
+	"wox/ui/contract"
 	woxcomponent "wox/ui/launcher/component"
 	woxui "wox/ui/runtime"
 	woxwidget "wox/ui/widget"
 )
+
+// TestPluginMultiChoiceRetainsSelections covers toggling multiple values and replacing a single value.
+func TestPluginMultiChoiceRetainsSelections(t *testing.T) {
+	a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+	defer a.cancel()
+	a.uiCall = nil
+	for _, multi := range []bool{true, false} {
+		field := formDefinition{Type: "select", Value: formDefinitionValue{Key: "providers", IsMulti: multi, Options: []formOption{{Value: "a"}, {Value: "b"}}}}
+		// Suppress async saves; this test checks selection state.
+		form := &pluginSettingsFormState{pluginID: "test", saving: true, formFieldsState: newFormFieldsState([]formDefinition{field}, map[string]string{"providers": "a"}, true)}
+		a.pluginSettings.SetForm(form)
+		a.openPluginFormChoice(0, woxui.Rect{Width: 200, Height: 32})
+		a.chooseSettingChoice(1)
+		want := "b"
+		if multi {
+			want = "a,b"
+		}
+		if got := form.values["providers"]; got != want {
+			t.Fatalf("multi=%v: got %q, want %q", multi, got, want)
+		}
+		if !multi {
+			continue
+		}
+		a.openPluginFormChoice(0, woxui.Rect{Width: 200, Height: 32})
+		a.chooseSettingChoice(0)
+		if got := form.values["providers"]; got != "b" {
+			t.Fatalf("deselect: %q", got)
+		}
+		a.openPluginFormChoice(0, woxui.Rect{Width: 200, Height: 32})
+		a.chooseSettingChoice(1)
+		if got := form.values["providers"]; got != "" {
+			t.Fatalf("clear: %q", got)
+		}
+	}
+}
+
+// TestPluginMultiChoiceSelectAllIsExclusive keeps a select-all sentinel from sticking to individual choices.
+func TestPluginMultiChoiceSelectAllIsExclusive(t *testing.T) {
+	a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+	defer a.cancel()
+	a.uiCall = nil
+	var item definition.PluginSettingDefinitionItem
+	raw := `{"Type":"select","Value":{"Key":"browsers","IsMulti":true,"Options":[{"Label":"All","Value":"everything","IsSelectAll":true},{"Label":"Chrome","Value":"chrome"},{"Label":"Edge","Value":"edge"}]}}`
+	if err := json.Unmarshal([]byte(raw), &item); err != nil {
+		t.Fatal(err)
+	}
+	field, ok := fromCoreFormDefinition(item)
+	if !ok || !field.Value.Options[0].IsSelectAll || field.Value.Options[1].IsSelectAll {
+		t.Fatalf("IsSelectAll was dropped: %#v", field.Value.Options)
+	}
+	form := &pluginSettingsFormState{pluginID: "test", saving: true, formFieldsState: newFormFieldsState([]formDefinition{field}, map[string]string{"browsers": "everything"}, true)}
+	a.pluginSettings.SetForm(form)
+	choose := func(index int) {
+		a.openPluginFormChoice(0, woxui.Rect{Width: 200, Height: 32})
+		a.chooseSettingChoice(index)
+	}
+	choose(1)
+	if got := form.values["browsers"]; got != "chrome" {
+		t.Fatalf("narrow: %q", got)
+	}
+	choose(2)
+	if got := form.values["browsers"]; got != "chrome,edge" {
+		t.Fatalf("add: %q", got)
+	}
+	choose(0)
+	if got := form.values["browsers"]; got != "everything" {
+		t.Fatalf("select all: %q", got)
+	}
+	choose(0)
+	if got := form.values["browsers"]; got != "" {
+		t.Fatalf("clear select all: %q", got)
+	}
+	form.values["browsers"] = "everything,chrome"
+	choose(2)
+	if got := form.values["browsers"]; got != "chrome,edge" {
+		t.Fatalf("legacy mix: %q", got)
+	}
+}
+
+// TestPluginChoiceSearch checks that dropdown search is opt-in for any list size.
+func TestPluginChoiceSearch(t *testing.T) {
+	a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+	defer a.cancel()
+	a.uiCall = nil
+	for _, count := range []int{1, 157} {
+		for flag, want := range map[string]bool{"": false, `,"Filterable":false`: false, `,"Filterable":true`: true} {
+			t.Run(fmt.Sprintf("%d/%s", count, flag), func(t *testing.T) {
+				var item definition.PluginSettingDefinitionItem
+				if err := json.Unmarshal([]byte(`{"Type":"select","Value":{"Key":"currency"`+flag+`}}`), &item); err != nil {
+					t.Fatal(err)
+				}
+				options := make([]formOption, count)
+				for i := range options {
+					options[i] = formOption{Label: "USD", Value: "USD"}
+				}
+				converted, ok := fromCoreFormDefinition(item)
+				if !ok || converted.Value.Filterable != want {
+					t.Fatal("search flag was not carried to the form")
+				}
+				converted.Value.Options = options
+				a.pluginSettings.SetForm(&pluginSettingsFormState{
+					pluginID:        "test",
+					formFieldsState: newFormFieldsState([]formDefinition{converted}, map[string]string{"currency": "USD"}, true),
+				})
+				a.openPluginFormChoice(0, woxui.Rect{Width: 200, Height: 32})
+				picker := a.generalSettings.ChoicePicker()
+				if picker == nil || picker.item.filterable != want {
+					t.Fatal("wrong search state")
+				}
+				if picker.item.value != "USD" || len(picker.item.choices) != count {
+					t.Fatal("opening the list changed its value or options")
+				}
+			})
+		}
+	}
+}
 
 func TestPluginMatchesFiltersExclusiveDropdowns(t *testing.T) {
 	enabled := pluginSettingsPlugin{ID: "a", Runtime: "nodejs"}
@@ -35,8 +158,12 @@ func TestPluginMatchesFiltersExclusiveDropdowns(t *testing.T) {
 	if got := pluginMatchesFilters(enabled, pluginFilterState{pluginType: pluginFilterSystem}, false); got {
 		t.Fatal("third-party plugin must not match system type")
 	}
-	if got := pluginMatchesFilters(script, pluginFilterState{runtime: pluginFilterRuntimeScriptNodeJS}, false); !got {
-		t.Fatal("javascript script plugin must match the Node.js script runtime")
+	if got := pluginMatchesFilters(script, pluginFilterState{runtime: pluginFilterRuntimeScript}, false); !got {
+		t.Fatal("javascript script plugin must match the script runtime")
+	}
+	pythonScript := pluginSettingsPlugin{ID: "py-script", Runtime: "script", Entry: "main.py"}
+	if got := pluginMatchesFilters(pythonScript, pluginFilterState{runtime: pluginFilterRuntimeScript}, false); !got {
+		t.Fatal("python script plugin must match the same script runtime")
 	}
 	if got := pluginMatchesFilters(script, pluginFilterState{runtime: pluginFilterRuntimePython}, false); got {
 		t.Fatal("javascript script plugin must not match the Python runtime")
@@ -48,6 +175,49 @@ func TestPluginMatchesFiltersExclusiveDropdowns(t *testing.T) {
 		t.Fatal("empty filters must keep every plugin visible")
 	}
 }
+
+func TestPluginRuntimeFilterMatchesThirdPartyHost(t *testing.T) {
+	dotnet := pluginSettingsPlugin{ID: "cs", Runtime: "FLOWDOTNET"}
+	script := pluginSettingsPlugin{ID: "py", Runtime: "FLOWJSONRPC"}
+	if !pluginMatchesRuntimeFilter(dotnet, "FLOWDOTNET") {
+		t.Fatal("dotnet plugin must match its host runtime")
+	}
+	if pluginMatchesRuntimeFilter(script, "FLOWDOTNET") || pluginMatchesRuntimeFilter(dotnet, pluginFilterRuntimePython) {
+		t.Fatal("a third-party host filter must not keep other runtimes")
+	}
+}
+
+func TestThirdPartyRuntimeFilterValuesSkipBuiltinHosts(t *testing.T) {
+	previous := plugin.AllHosts
+	t.Cleanup(func() { plugin.AllHosts = previous })
+	plugin.AllHosts = []plugin.Host{
+		runtimeFilterHost{runtime: plugin.PLUGIN_RUNTIME_PYTHON},
+		runtimeFilterHost{runtime: "FLOWDOTNET"},
+		runtimeFilterHost{runtime: "FLOWJSONRPC"},
+		runtimeFilterHost{runtime: "FLOWDOTNET"},
+		runtimeFilterHost{runtime: plugin.PLUGIN_RUNTIME_GO},
+	}
+	got := thirdPartyRuntimeFilterValues()
+	if !reflect.DeepEqual(got, []string{"FLOWDOTNET", "FLOWJSONRPC"}) {
+		t.Fatalf("runtimes = %#v", got)
+	}
+}
+
+type runtimeFilterHost struct {
+	runtime plugin.Runtime
+}
+
+func (h runtimeFilterHost) GetRuntime(context.Context) plugin.Runtime { return h.runtime }
+func (h runtimeFilterHost) Start(context.Context) error               { return nil }
+func (h runtimeFilterHost) Stop(context.Context)                      {}
+func (h runtimeFilterHost) IsStarted(context.Context) bool            { return false }
+func (h runtimeFilterHost) RuntimeStatus(context.Context) plugin.RuntimeHostStatus {
+	return plugin.RuntimeHostStatus{}
+}
+func (h runtimeFilterHost) LoadPlugin(context.Context, plugin.Metadata, string) (plugin.Plugin, error) {
+	return nil, nil
+}
+func (h runtimeFilterHost) UnloadPlugin(context.Context, plugin.Metadata) {}
 
 func TestResetPluginFiltersClearsExclusiveDropdowns(t *testing.T) {
 	app := &App{
@@ -93,6 +263,35 @@ func TestGroupInstalledPluginsPutsEnabledFirstAndOmitsEmptySections(t *testing.T
 	}
 	if got := groupInstalledPlugins(nil); len(got) != 0 {
 		t.Fatalf("empty filter = %#v", got)
+	}
+}
+
+func TestGroupStorePluginsPutsWoxFirst(t *testing.T) {
+	filtered := []filteredPlugin{
+		{index: 0, plugin: pluginSettingsPlugin{ID: "flow-b", Name: "Beta", Store: "flow"}},
+		{index: 1, plugin: pluginSettingsPlugin{ID: "acme", Name: "Middle", Store: "acme"}},
+		{index: 2, plugin: pluginSettingsPlugin{ID: "wox-z", Name: "Zinc", Store: "wox"}},
+		{index: 3, plugin: pluginSettingsPlugin{ID: "flow-a", Name: "Alpine", Store: "FLOW"}},
+		{index: 4, plugin: pluginSettingsPlugin{ID: "wox-a", Name: "Alpha"}},
+	}
+	got := groupStorePlugins(filtered)
+	if len(got) != 3 || got[0].ID != plugin.OfficialPluginStoreID || got[1].ID != "acme" || got[2].ID != "flow" {
+		t.Fatalf("sections = %#v", got)
+	}
+	if ids := installedSectionPluginIDs(installedPluginSection{Plugins: got[0].Plugins}); !reflect.DeepEqual(ids, []string{"wox-a", "wox-z"}) {
+		t.Fatalf("wox order = %v", ids)
+	}
+	if ids := installedSectionPluginIDs(installedPluginSection{Plugins: got[2].Plugins}); !reflect.DeepEqual(ids, []string{"flow-a", "flow-b"}) {
+		t.Fatalf("flow order = %v", ids)
+	}
+	if got := groupStorePlugins(nil); len(got) != 0 {
+		t.Fatalf("empty filter = %#v", got)
+	}
+	if !pluginCatalogLess(pluginSettingsPlugin{Name: "Zebra", Store: "wox"}, pluginSettingsPlugin{Name: "Alpha", Store: "flow"}, true) {
+		t.Fatal("official store must sort above other catalogs")
+	}
+	if pluginCatalogLess(pluginSettingsPlugin{Name: "Alpha", Store: "flow"}, pluginSettingsPlugin{Name: "Zebra", Store: "wox"}, true) {
+		t.Fatal("another catalog must not sort above the official store")
 	}
 }
 
@@ -748,6 +947,139 @@ func TestPluginSelectionRefreshSkipsFormWhileSaveInFlight(t *testing.T) {
 	}
 }
 
+// TestPluginSelectionRefreshPreservesEditsAndUpdatesDisplayFields covers catalog refresh during editing and saving.
+func TestPluginSelectionRefreshPreservesEditsAndUpdatesDisplayFields(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		saving bool
+		dirty  bool
+	}{
+		{name: "value save in flight", saving: true},
+		{name: "unsaved edits", dirty: true},
+		{name: "value save with unsaved edits", saving: true, dirty: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+			defer a.cancel()
+			item := pluginSettingsPlugin{
+				ID: "file", Name: "File Search",
+				SettingDefinitions: []formDefinition{
+					{Type: "fileIndexService", Value: formDefinitionValue{Key: "service", Status: "Update required", Detail: "2.8.2 → 2.8.3", Actions: []formServiceAction{{ID: "start", Enabled: true}}}},
+					{Type: "textbox", Value: formDefinitionValue{Key: "directory"}},
+					{Type: "stats", Value: formDefinitionValue{Key: "stats", Rows: []formStatsRow{{Label: "Files", Value: "10"}}}},
+					{Type: "label", Value: formDefinitionValue{Content: "old first"}},
+					{Type: "label", Value: formDefinitionValue{Content: "old second"}},
+				},
+				Setting: pluginSettingsData{Settings: map[string]string{"directory": "saved"}},
+			}
+			a.pluginSettings.SetPlugins([]pluginSettingsPlugin{item})
+			a.setPluginSelectionLocked(0)
+			form := a.pluginSettings.Form()
+			form.saving = test.saving
+			wantValue := "saved"
+			if test.dirty {
+				wantValue = "unsaved"
+				form.values["directory"] = wantValue
+			}
+			item.SettingDefinitions = []formDefinition{
+				{Type: "fileIndexService", Value: formDefinitionValue{Key: "service", Status: "Running", Detail: "2.8.3", Actions: []formServiceAction{{ID: "uninstall", Enabled: true}}}},
+				{Type: "textbox", Value: formDefinitionValue{Key: "directory", DefaultValue: "new default"}},
+				{Type: "stats", Value: formDefinitionValue{Key: "stats", Rows: []formStatsRow{{Label: "Files", Value: "20"}}}},
+				{Type: "label", Value: formDefinitionValue{Content: "new first"}},
+				{Type: "label", Value: formDefinitionValue{Content: "new second"}},
+			}
+			a.pluginSettings.SetPlugins([]pluginSettingsPlugin{item})
+
+			a.setPluginSelectionLocked(0)
+
+			if a.pluginSettings.Form() != form || form.values["directory"] != wantValue || form.initial["directory"] != "saved" || form.saving != test.saving {
+				t.Fatal("service refresh replaced the retained form or changed its edits/save state")
+			}
+			service := form.definitions[1].Value
+			if service.Status != "Running" || service.Detail != "2.8.3" || len(service.Actions) != 1 || service.Actions[0].ID != "uninstall" {
+				t.Fatalf("service row retained stale update state: %+v", service)
+			}
+			if form.definitions[2].Value.DefaultValue != "" || form.definitions[3].Value.Rows[0].Value != "20" || form.definitions[4].Value.Content != "new first" || form.definitions[5].Value.Content != "new second" {
+				t.Fatal("refresh must preserve editable definitions and update every display row independently")
+			}
+		})
+	}
+}
+
+type pluginSettingActionTestServices struct {
+	contract.Services
+	actionErr error
+	release   chan struct{}
+}
+
+func (s pluginSettingActionTestServices) ExecutePluginSettingAction(context.Context, string, string, string) error {
+	<-s.release
+	return s.actionErr
+}
+
+func (s pluginSettingActionTestServices) Plugins(context.Context, string, contract.PluginCatalog) ([]contract.PluginCatalogItem, error) {
+	return []contract.PluginCatalogItem{{ID: "file", SettingDefinitions: definition.PluginSettingDefinitions{{
+		Type:  definition.PluginSettingDefinitionTypeFileIndexService,
+		Value: &definition.PluginSettingValueService{Key: "service", Status: "Running", Detail: "2.8.3"},
+	}}}}, nil
+}
+
+// TestPluginSettingActionDoesNotOwnFormSaveState exercises completion across a form refresh without a native service or UAC.
+func TestPluginSettingActionDoesNotOwnFormSaveState(t *testing.T) {
+	for _, actionErr := range []error{nil, fmt.Errorf("service action failed")} {
+		t.Run(fmt.Sprint(actionErr), func(t *testing.T) {
+			a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+			defer a.cancel()
+			release := make(chan struct{})
+			a.services = pluginSettingActionTestServices{actionErr: actionErr, release: release}
+			a.pluginSettings.SetPlugins([]pluginSettingsPlugin{{ID: "file", SettingDefinitions: []formDefinition{{
+				Type: "fileIndexService", Value: formDefinitionValue{Key: "service", Status: "Update required"},
+			}}}})
+			a.setPluginSelectionLocked(0)
+			original := a.pluginSettings.Form()
+			original.status = "existing form status"
+			finished := make(chan struct{}, 1)
+			// The service stays blocked while the test edits the form. Completion then
+			// runs inline, including nested window lookups, before publishing the result.
+			a.uiCall = func(fn func()) error {
+				fn()
+				if a.pluginSettings.settingAction.actionID == "" {
+					select {
+					case finished <- struct{}{}:
+					default:
+					}
+				}
+				return nil
+			}
+			a.runPluginServiceAction("start")
+			if original.saving || original.status != "existing form status" || a.pluginSettings.Snapshot().PluginSettingAction.actionID != "start" {
+				t.Fatal("service progress must be independent of editable values and their save status")
+			}
+			a.setPluginSelectionLocked(0)
+			if a.pluginSettings.Form() == original || a.pluginSettings.settingAction.actionID != "start" {
+				t.Fatal("form replacement must not discard action progress")
+			}
+			close(release)
+			select {
+			case <-finished:
+			case <-time.After(5 * time.Second):
+				t.Fatal("setting action did not finish")
+			}
+			form := a.pluginSettings.Form()
+			if form.saving || form.statusError {
+				t.Fatal("service completion changed form save state")
+			}
+			if actionErr == nil {
+				if form.definitions[1].Value.Status != "Running" || a.pluginSettings.settingAction.errorText != "" {
+					t.Fatal("successful service action did not refresh the current page")
+				}
+			} else if a.pluginSettings.settingAction.errorText != actionErr.Error() {
+				t.Fatal("service error was lost when the form changed")
+			}
+		})
+	}
+}
+
 func formValue(form *pluginSettingsFormState, key string) string {
 	if form == nil {
 		return ""
@@ -875,6 +1207,40 @@ func findPluginSemanticsByAutomationID(widget woxwidget.Widget, automationID str
 		}
 	}
 	return woxwidget.Semantics{}, false
+}
+
+func TestPluginDetailShowsNativeSettingsButton(t *testing.T) {
+	plugins := newPluginSettingsController(CommonDeps{})
+	plugins.SetPlugins([]pluginSettingsPlugin{{ID: "dict", Name: "Dictionary", HasNativeSettings: true}})
+	plugins.SetSelected(0)
+	plugins.SetForm(&pluginSettingsFormState{
+		pluginID:        "dict",
+		formFieldsState: newFormFieldsState([]formDefinition{pluginTriggerKeywordDefinition()}, map[string]string{}, false),
+	})
+	a := newApp(false, nil, woxui.NewWindowManager(), newAppInstanceRegistry(), nil, true, "", launcherWindowID)
+	defer a.cancel()
+	a.pluginSettings = plugins
+	a.translations = map[string]string{
+		"ui_plugin_tab_settings":                "Settings",
+		"ui_plugin_tab_commands":                "Commands",
+		"ui_plugin_tab_description":             "Description",
+		"ui_plugin_tab_trigger_keywords":        "Keywords",
+		"ui_plugin_tab_privacy":                 "Privacy",
+		"ui_plugin_native_settings_title":       "Settings window",
+		"ui_plugin_native_settings_description": "This plugin opens its settings in its own window.",
+		"ui_plugin_native_settings_open":        "Open settings",
+	}
+	props := a.pluginDetailProps(settingsSnapshot{plugins: plugins.Snapshot()}, 800, 600, 1)
+	if props.Editor == nil || props.Editor.Form == nil || len(props.Editor.Form.Rows) == 0 {
+		t.Fatal("native settings should add a settings row")
+	}
+	button, ok := findPluginSemanticsByAutomationID(props.Editor.Form.Rows[0], "plugin-native-settings")
+	if !ok {
+		t.Fatal("native settings row is missing the open button")
+	}
+	if button.Label != "Open settings" || button.Disabled {
+		t.Fatalf("open button = %+v", button)
+	}
 }
 
 func TestPluginSelectionRefreshKeepsDetailTabForSamePlugin(t *testing.T) {

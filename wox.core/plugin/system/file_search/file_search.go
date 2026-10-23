@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +27,7 @@ import (
 	"wox/util/filesearch"
 	"wox/util/filesearchservice"
 	"wox/util/nativecontextmenu"
+	"wox/util/pathquery"
 	"wox/util/permission"
 	"wox/util/recentfiles"
 	"wox/util/shell"
@@ -37,7 +37,7 @@ import (
 var fileIcon = icons.Get(icons.PluginFile)
 
 const (
-	PluginID                  = "979d6363-025a-4f51-88d3-0b04e9dc56bf"
+	PluginID                  = common.FileSearchPluginID
 	ToolSearch                = "search"
 	ToolSearchEntryTypeFolder = "folder"
 )
@@ -55,6 +55,7 @@ const contentRootsSettingKey = "contentRoots"
 const fileIgnorePatternsSettingKey = "ignorePatterns"
 const fileSkipHiddenFilesSettingKey = "skipHiddenFiles"
 const fileShowPreviewSettingKey = "showPreview"
+const fileGlobalResultLimitSettingKey = "globalResultLimit"
 const fileSearchToolbarMsgID = "file-search-status"
 const fileSearchStatusCommand = "status"
 
@@ -67,19 +68,19 @@ const fileIndexServiceSettingKey = "indexService"
 const contentSearchToolbarMsgID = "file-search-content-status"
 
 const (
-	slowFileSearchQueryThresholdMs    int64 = 40
-	slowFileSearchStageThresholdMs    int64 = 15
-	incrementalToolbarMinimumShowMs   int64 = 1000
-	fullIndexCompletionToolbarHoldMs  int64 = 1000 * 5
-	contentCrawlDebounceWindow              = 1 * time.Second
-	toolbarActivityPathMaxChars             = 42
-	toolbarErrorReasonMaxChars              = 28
-	fileSearchResultLimit                   = 100
-	fileSearchContentResultLimit            = 20
-	fileSearchRecentResultLimit             = 50
-	fileSearchRecentCandidateLimit          = 80
-	fileSearchRefinedCandidateLimit         = 300
-	fileSearchRefinementSortScoreStep       = 1000000
+	slowFileSearchQueryThresholdMs   int64 = 40
+	slowFileSearchStageThresholdMs   int64 = 15
+	incrementalToolbarMinimumShowMs  int64 = 1000
+	fullIndexCompletionToolbarHoldMs int64 = 1000 * 5
+	contentCrawlDebounceWindow             = 1 * time.Second
+	toolbarActivityPathMaxChars            = 42
+	toolbarErrorReasonMaxChars             = 28
+	fileSearchResultLimit                  = 100
+	fileSearchGlobalResultLimit            = 5
+	fileSearchContentResultLimit           = 20
+	fileSearchRecentResultLimit            = 50
+	fileSearchRecentCandidateLimit         = 80
+	fileSearchRefinedCandidateLimit        = 300
 )
 
 // listRecentFilesFn is the OS recent-file lookup so tests can inject fixtures
@@ -95,12 +96,6 @@ const (
 	fileSearchTypeRefinementFile    = "file"
 	fileSearchTypeRefinementFolder  = "folder"
 	fileSearchTypeRefinementContent = "content"
-
-	fileSearchSortRefinementKey       = "file_sort"
-	fileSearchSortRefinementRelevance = "relevance"
-	fileSearchSortRefinementName      = "name"
-	fileSearchSortRefinementModified  = "modified"
-	fileSearchSortRefinementSize      = "size"
 )
 
 type fileRootSetting struct {
@@ -139,6 +134,16 @@ type FileSearchPlugin struct {
 	rootsSyncGeneration      atomic.Int64
 }
 
+// ReleasePreparedSearchText uses the shared long-hide lifecycle to return clean
+// index pages. Query columns stay mapped and incur no heap rebuild on next use.
+func (c *FileSearchPlugin) ReleasePreparedSearchText() {
+	if c.engine != nil {
+		if err := c.engine.ReleaseIdleMemory(); err != nil {
+			util.GetLogger().Warn(context.Background(), "filesearch idle memory release: "+err.Error())
+		}
+	}
+}
+
 type fileSearchQueryDiagnostics struct {
 	toolbarElapsedMs int64
 	searchElapsedMs  int64
@@ -163,6 +168,7 @@ func (c *FileSearchPlugin) GetMetadata() plugin.Metadata {
 		Icon:          fileIcon.String(),
 		Entry:         "",
 		TriggerKeywords: []string{
+			"*",
 			"f",
 		},
 		SupportedOS: []string{
@@ -172,7 +178,7 @@ func (c *FileSearchPlugin) GetMetadata() plugin.Metadata {
 		},
 		Features: []plugin.MetadataFeature{
 			{Name: plugin.MetadataFeatureDisableAutoCommandHint},
-			{Name: plugin.MetadataFeatureMRU, Params: map[string]any{"HashBy": "scoreKey"}},
+			{Name: plugin.MetadataFeatureMRU, Params: map[string]any{"HashBy": "identityKey"}},
 		},
 		SettingDefinitions: definition.PluginSettingDefinitions{
 			{
@@ -218,6 +224,27 @@ func (c *FileSearchPlugin) GetMetadata() plugin.Metadata {
 					Label:        "i18n:plugin_file_setting_show_preview_label",
 					Tooltip:      "i18n:plugin_file_setting_show_preview_tooltip",
 					DefaultValue: "true",
+				},
+			},
+			{
+				Type: definition.PluginSettingDefinitionTypeTextBox,
+				Value: &definition.PluginSettingValueTextBox{
+					Key:          fileGlobalResultLimitSettingKey,
+					Label:        "i18n:plugin_file_setting_global_result_limit_label",
+					Tooltip:      "i18n:plugin_file_setting_global_result_limit_tooltip",
+					DefaultValue: strconv.Itoa(fileSearchGlobalResultLimit),
+					Validators: []validator.PluginSettingValidator{
+						{
+							Type:  validator.PluginSettingValidatorTypeNotEmpty,
+							Value: &validator.PluginSettingValidatorNotEmpty{},
+						},
+						{
+							Type: validator.PluginSettingValidatorTypeIsNumber,
+							Value: &validator.PluginSettingValidatorIsNumber{
+								IsInteger: true,
+							},
+						},
+					},
 				},
 			},
 			{
@@ -327,13 +354,6 @@ func (c *FileSearchPlugin) Init(ctx context.Context, initParams plugin.InitParam
 		filesearchservice.GetStatus()
 	}
 	serviceRunning := runtime.GOOS == "windows" && filesearchservice.IsRunning()
-	if serviceRunning {
-		indexPath := filepath.Join(util.GetLocation().GetFileSearchDirectory(), filesearchservice.IndexDirectory)
-		if err := filesearchservice.Resume(ctx, indexPath); err != nil {
-			serviceRunning = false
-			util.GetLogger().Warn(ctx, "file index service could not open its Wox cache directory: "+err.Error())
-		}
-	}
 	engine, initErr := filesearch.NewEngineWithOptions(ctx, filesearch.EngineOptions{
 		Policy:        c.indexPolicy.toFilesearchPolicy(),
 		SkipNameIndex: serviceRunning && !c.isContentSearchEnabled(ctx),
@@ -423,9 +443,13 @@ func (c *FileSearchPlugin) Init(ctx context.Context, initParams plugin.InitParam
 				util.GetLogger().Warn(ctx, "failed to update file index service automatically: "+err.Error())
 				return
 			}
-			indexPath := filepath.Join(util.GetLocation().GetFileSearchDirectory(), filesearchservice.IndexDirectory)
-			if err := filesearchservice.Resume(ctx, indexPath); err != nil {
-				util.GetLogger().Warn(ctx, "updated file index service could not open its Wox cache directory: "+err.Error())
+			c.serviceSyncMu.Lock()
+			defer c.serviceSyncMu.Unlock()
+			generation := c.nextContentSearchGeneration()
+			c.stopContentCrawlWork()
+			defer c.requestContentCrawl(ctx, generation)
+			if err := c.engine.RefreshNativeNameIndex(ctx); err != nil {
+				util.GetLogger().Warn(ctx, "updated file index service could not start its source: "+err.Error())
 				return
 			}
 			if !c.isContentSearchEnabled(ctx) {
@@ -521,7 +545,16 @@ func (c *FileSearchPlugin) HandleSettingAction(ctx context.Context, actionID str
 	util.Go(backgroundCtx, "sync file search after service action", func() {
 		c.serviceSyncMu.Lock()
 		defer c.serviceSyncMu.Unlock()
+		generation := c.nextContentSearchGeneration()
+		c.stopContentCrawlWork()
+		defer c.requestContentCrawl(backgroundCtx, generation)
 		// Reconcile current state instead of replaying a stale start/uninstall action.
+		if err := c.engine.RefreshNativeNameIndex(backgroundCtx); err != nil {
+			util.GetLogger().Warn(backgroundCtx, "file search native source refresh failed: "+err.Error())
+			c.engine.EnableLocalNameIndex(backgroundCtx)
+			c.syncUserRoots(backgroundCtx)
+			return
+		}
 		if !filesearchservice.IsRunning() || c.isContentSearchEnabled(backgroundCtx) {
 			c.engine.EnableLocalNameIndex(backgroundCtx)
 		} else {
@@ -767,7 +800,7 @@ func (c *FileSearchPlugin) startContentHook(ctx context.Context, generation int6
 	}
 	exts := filesearch.ContentExtensionsFromList(filesearch.ContentExtensionListFromSetting(c.api.GetSetting(ctx, contentSearchExtensionsKey)))
 	c.runIfContentSearchCurrent(ctx, generation, func() {
-		c.engine.StartContentHook(ctx, exts, filesearch.ContentDefaultMaxReadBytes)
+		c.engine.StartContentHook(ctx, c.getContentSearchRootRecords(ctx), c.indexPolicy.toFilesearchPolicy(), exts, filesearch.ContentDefaultMaxReadBytes)
 	})
 }
 
@@ -803,11 +836,7 @@ func (c *FileSearchPlugin) waitForFileSearchIdle(ctx context.Context) {
 		}
 		localIndexing, localErr := c.engine.IsLocalIndexing(ctx)
 		if (err != nil || !status.IsIndexing) && (localErr != nil || !localIndexing) {
-			// Also check if FTS rebuild is still in progress — the DB is locked
-			// during rebuild and content crawl writes would fail.
-			if !c.engine.NeedsSearchArtifactRebuild() {
-				return
-			}
+			return
 		}
 		select {
 		case <-ctx.Done():
@@ -926,7 +955,7 @@ func (c *FileSearchPlugin) searchTool(ctx context.Context, option plugin.InvokeP
 		return plugin.InvokePluginToolHandlerResult{Error: &plugin.PluginToolError{Code: plugin.PluginToolErrorExecutionFailed, Message: err.Error()}}
 	}
 	if entryType == ToolSearchEntryTypeFolder {
-		results = refineFileSearchResults(results, fileSearchTypeRefinementFolder, fileSearchSortRefinementRelevance, fileSearchResultLimit)
+		results = refineFileSearchResults(results, fileSearchTypeRefinementFolder, fileSearchResultLimit)
 	}
 	entries := make([]FileSearchToolResult, 0, len(results))
 	for _, item := range results {
@@ -936,6 +965,11 @@ func (c *FileSearchPlugin) searchTool(ctx context.Context, option plugin.InvokeP
 }
 
 func (c *FileSearchPlugin) Query(ctx context.Context, query plugin.Query) plugin.QueryResponse {
+	// Folder handles existing paths and child-name completion inside existing directories.
+	if query.IsGlobalQuery() && pathquery.IsBrowseQuery(query.Search) {
+		return plugin.QueryResponse{}
+	}
+
 	queryStartedAt := util.GetSystemTimestamp()
 	diagnostics := fileSearchQueryDiagnostics{}
 
@@ -963,8 +997,7 @@ func (c *FileSearchPlugin) Query(ctx context.Context, query plugin.Query) plugin
 
 	searchStartedAt := util.GetSystemTimestamp()
 	selectedType := selectedFileSearchType(query)
-	selectedSort := selectedFileSearchSort(query)
-	results, err := c.searchFileQuery(ctx, query.Search, selectedType, selectedSort)
+	results, err := c.searchFileQuery(ctx, query, selectedType)
 	diagnostics.searchElapsedMs = util.GetSystemTimestamp() - searchStartedAt
 	if err != nil {
 		c.logQueryDiagnostics(ctx, query.Search, diagnostics, 0, util.GetSystemTimestamp()-queryStartedAt)
@@ -972,8 +1005,8 @@ func (c *FileSearchPlugin) Query(ctx context.Context, query plugin.Query) plugin
 		c.api.Notify(ctx, err.Error())
 		return plugin.QueryResponse{}
 	}
-	results = refineFileSearchResults(results, selectedType, selectedSort, fileSearchResultLimitFor(selectedType, selectedSort))
-	queryResults := c.materializeFileSearchResults(ctx, query, results, selectedSort, false, &diagnostics)
+	results = refineFileSearchResults(results, selectedType, c.fileSearchResultLimitFor(ctx, query, selectedType))
+	queryResults := c.materializeFileSearchResults(ctx, query, results, false, &diagnostics)
 	c.logQueryDiagnostics(ctx, query.Search, diagnostics, len(queryResults), util.GetSystemTimestamp()-queryStartedAt)
 
 	response := plugin.NewQueryResponse(queryResults)
@@ -981,24 +1014,42 @@ func (c *FileSearchPlugin) Query(ctx context.Context, query plugin.Query) plugin
 	return response
 }
 
-// queryRecentFiles lists OS-tracked recently accessed files for an empty triggered query.
+// queryRecentFiles prefers OS recents, with an indexed-modification fallback on macOS.
 func (c *FileSearchPlugin) queryRecentFiles(ctx context.Context, query plugin.Query, queryStartedAt int64) plugin.QueryResponse {
 	diagnostics := fileSearchQueryDiagnostics{}
 	searchStartedAt := util.GetSystemTimestamp()
 	items, err := listRecentFilesFn(ctx, recentfiles.ListOption{Limit: fileSearchRecentCandidateLimit})
-	diagnostics.searchElapsedMs = util.GetSystemTimestamp() - searchStartedAt
 	if err != nil {
 		c.api.Log(ctx, plugin.LogLevelWarning, fmt.Sprintf("recent files lookup failed: %s", err.Error()))
-		response := plugin.NewQueryResponse(nil)
-		response.Refinements = c.buildFileSearchRefinements(ctx)
-		return response
+		items = nil
 	}
-
 	selectedType := selectedFileSearchType(query)
-	selectedSort := selectedFileSearchSort(query)
 	results := recentFilesToSearchResults(items, c.getConfiguredSkipHiddenFiles(ctx))
-	results = refineFileSearchResults(results, selectedType, selectedSort, fileSearchRecentResultLimit)
-	queryResults := c.materializeFileSearchResults(ctx, query, results, selectedSort, true, &diagnostics)
+	// Spotlight can return no rows when indexing is disabled. Keep OS recents
+	// authoritative otherwise, and leave Windows/Linux recent-file behavior intact.
+	fallback := runtime.GOOS == "darwin" && (err != nil || len(items) == 0)
+	if fallback && ctx.Err() == nil {
+		skipHidden := c.getConfiguredSkipHiddenFiles(ctx)
+		results, err = c.engine.RecentModified(ctx, fileSearchRecentResultLimit, func(item filesearch.SearchResult) bool {
+			if skipHidden && isHiddenFileSearchPath(item.Path) {
+				return false
+			}
+			if selectedType == fileSearchTypeRefinementFile && item.IsDir || selectedType == fileSearchTypeRefinementFolder && !item.IsDir {
+				return false
+			}
+			_, statErr := os.Lstat(item.Path)
+			return statErr == nil
+		})
+		if err != nil {
+			c.api.Log(ctx, plugin.LogLevelWarning, fmt.Sprintf("recent modified fallback failed: %s", err.Error()))
+		}
+	}
+	diagnostics.searchElapsedMs = util.GetSystemTimestamp() - searchStartedAt
+	results = refineFileSearchResults(results, selectedType, fileSearchRecentResultLimit)
+	queryResults := c.materializeFileSearchResults(ctx, query, results, !fallback, &diagnostics)
+	if fallback {
+		c.api.Log(ctx, plugin.LogLevelInfo, fmt.Sprintf("recent files: source=index_modified visible=%d", len(queryResults)))
+	}
 	c.api.Log(ctx, plugin.LogLevelInfo, fmt.Sprintf("recent files: os=%d visible=%d", len(items), len(queryResults)))
 	c.logQueryDiagnostics(ctx, "recent", diagnostics, len(queryResults), util.GetSystemTimestamp()-queryStartedAt)
 
@@ -1032,7 +1083,7 @@ func recentFilesToSearchResults(items []recentfiles.File, skipHidden bool) []fil
 }
 
 // materializeFileSearchResults turns indexed or recent rows into launcher results.
-func (c *FileSearchPlugin) materializeFileSearchResults(ctx context.Context, query plugin.Query, results []filesearch.SearchResult, selectedSort string, recent bool, diagnostics *fileSearchQueryDiagnostics) []plugin.QueryResult {
+func (c *FileSearchPlugin) materializeFileSearchResults(ctx context.Context, query plugin.Query, results []filesearch.SearchResult, recent bool, diagnostics *fileSearchQueryDiagnostics) []plugin.QueryResult {
 	// Split result-materialization timing out from engine search timing because
 	// os.Stat/icon setup can make the plugin itself look slow even when the
 	// indexed lookup has already finished.
@@ -1043,22 +1094,23 @@ func (c *FileSearchPlugin) materializeFileSearchResults(ctx context.Context, que
 	// end-to-end query even though most files only need their shared type icon.
 	fileTypeIcons := map[string]common.WoxImage{}
 	showPreview := c.getConfiguredShowPreview(ctx)
+	contentSearchEnabled := c.isContentSearchEnabled(ctx)
 	queryResults := make([]plugin.QueryResult, 0, len(results))
-	for index, item := range results {
+	for _, item := range results {
 		icon := resolveFileSearchResultIcon(ctx, item, fileTypeIcons, diagnostics)
-		actions := c.buildFileSearchResultActions(ctx, item)
+		actions := c.buildFileSearchResultActions(ctx, item, contentSearchEnabled)
 
 		group, groupScore := fileSearchResultGroup(query)
 		queryResult := plugin.QueryResult{
-			Title:      item.Name,
-			SubTitle:   item.Path,
-			Icon:       icon,
-			Score:      item.Score,
-			ScoreKey:   item.Path,
-			Group:      group,
-			GroupScore: groupScore,
-			Tails:      fileSearchResultTails(item, recent),
-			Actions:    attachFileSearchMRUContext(actions, item.Path),
+			Title:       item.Name,
+			SubTitle:    item.Path,
+			Icon:        icon,
+			Score:       item.Score,
+			IdentityKey: item.Path,
+			Group:       group,
+			GroupScore:  groupScore,
+			Tails:       fileSearchResultTails(item, recent),
+			Actions:     attachFileSearchMRUContext(actions, item.Path),
 			DragData: &plugin.QueryResultDragData{
 				Type:  plugin.QueryResultDragDataTypeFiles,
 				Files: []string{item.Path},
@@ -1068,9 +1120,6 @@ func (c *FileSearchPlugin) materializeFileSearchResults(ctx context.Context, que
 			PreviewType:   plugin.WoxPreviewTypeFile,
 			PreviewData:   item.Path,
 			DefaultHidden: !showPreview,
-		}
-		if selectedSort != fileSearchSortRefinementRelevance {
-			queryResult.Score = fileSearchRefinementSortScore(index, len(results))
 		}
 		queryResults = append(queryResults, queryResult)
 	}
@@ -1088,38 +1137,65 @@ func fileSearchResultGroup(query plugin.Query) (string, int64) {
 }
 
 // searchFileQuery recalls name and content candidates for the selected type filter.
-func (c *FileSearchPlugin) searchFileQuery(ctx context.Context, queryText string, selectedType string, selectedSort string) ([]filesearch.SearchResult, error) {
+func (c *FileSearchPlugin) searchFileQuery(ctx context.Context, query plugin.Query, selectedType string) ([]filesearch.SearchResult, error) {
+	queryText := query.Search
+	candidateLimit := c.fileSearchCandidateLimit(ctx, query, selectedType)
 	if selectedType == fileSearchTypeRefinementContent {
 		// Query the content index directly so name-matching files that also hit
 		// content stay visible, instead of only the extras appended after names.
-		return c.queryContentSearchResults(ctx, queryText, fileSearchCandidateLimit(selectedType, selectedSort)), nil
+		return c.queryContentSearchResults(ctx, queryText, candidateLimit), nil
 	}
 
-	results, err := c.search(ctx, queryText, fileSearchCandidateLimit(selectedType, selectedSort))
+	results, err := c.search(ctx, queryText, candidateLimit)
 	if err != nil {
 		return nil, err
 	}
 	if selectedType != fileSearchTypeRefinementFolder {
-		results = c.appendContentSearchResults(ctx, queryText, results, fileSearchResultLimit+fileSearchContentResultLimit)
+		results = c.appendContentSearchResults(ctx, queryText, results, c.fileSearchResultLimitFor(ctx, query, selectedType))
 	}
 	return results, nil
 }
 
-func fileSearchCandidateLimit(selectedType string, selectedSort string) int {
-	if selectedType != fileSearchTypeRefinementAll || selectedSort != fileSearchSortRefinementRelevance {
-		// Feature addition: type filters and non-relevance sorting need a wider
-		// candidate window before plugin-side refinement. Keeping the old limit
-		// for the default path preserves the fast historical relevance search.
+func (c *FileSearchPlugin) fileSearchCandidateLimit(ctx context.Context, query plugin.Query, selectedType string) int {
+	if query.IsGlobalQuery() {
+		return c.getConfiguredGlobalResultLimit(ctx)
+	}
+	if selectedType != fileSearchTypeRefinementAll {
+		// Type filters need a wider candidate window before plugin-side filtering.
+		// Keep the default query window small to preserve its latency and memory use.
 		return fileSearchRefinedCandidateLimit
 	}
 	return fileSearchResultLimit
 }
 
-func fileSearchResultLimitFor(selectedType string, selectedSort string) int {
-	if selectedType != fileSearchTypeRefinementFolder && selectedType != fileSearchTypeRefinementContent && selectedSort == fileSearchSortRefinementRelevance {
+func (c *FileSearchPlugin) fileSearchResultLimitFor(ctx context.Context, query plugin.Query, selectedType string) int {
+	if query.IsGlobalQuery() {
+		return c.getConfiguredGlobalResultLimit(ctx)
+	}
+	if selectedType != fileSearchTypeRefinementFolder && selectedType != fileSearchTypeRefinementContent {
 		return fileSearchResultLimit + fileSearchContentResultLimit
 	}
 	return fileSearchResultLimit
+}
+
+// getConfiguredGlobalResultLimit reads the global-search cap. Empty, invalid, or non-positive values stay at the default.
+func (c *FileSearchPlugin) getConfiguredGlobalResultLimit(ctx context.Context) int {
+	if c == nil || c.api == nil {
+		return fileSearchGlobalResultLimit
+	}
+	raw := strings.TrimSpace(c.api.GetSetting(ctx, fileGlobalResultLimitSettingKey))
+	if raw == "" {
+		return fileSearchGlobalResultLimit
+	}
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		c.api.Log(ctx, plugin.LogLevelWarning, "Failed to parse file search global result limit, using default: "+raw)
+		return fileSearchGlobalResultLimit
+	}
+	if limit > fileSearchResultLimit {
+		return fileSearchResultLimit
+	}
+	return limit
 }
 
 // queryContentSearchResults converts current content-index hits into result rows.
@@ -1204,7 +1280,7 @@ func fileSearchResultTails(item filesearch.SearchResult, recent bool) []plugin.Q
 }
 
 // buildFileSearchResultActions keeps folder navigation integrated with the path-browse plugin.
-func (c *FileSearchPlugin) buildFileSearchResultActions(ctx context.Context, item filesearch.SearchResult) []plugin.QueryResultAction {
+func (c *FileSearchPlugin) buildFileSearchResultActions(ctx context.Context, item filesearch.SearchResult, contentSearchEnabled bool) []plugin.QueryResultAction {
 	actions := []plugin.QueryResultAction{
 		{
 			Name: "i18n:plugin_file_open",
@@ -1297,7 +1373,7 @@ func (c *FileSearchPlugin) buildFileSearchResultActions(ctx context.Context, ite
 		// and ordinary filename searches while still making recovery easy.
 		c.buildIndexFilesAction(),
 	)
-	if c.isContentSearchEnabled(ctx) {
+	if contentSearchEnabled {
 		actions = append(actions, c.buildRebuildContentIndexAction())
 	}
 
@@ -1340,7 +1416,7 @@ func (c *FileSearchPlugin) handleMRURestore(ctx context.Context, mruData plugin.
 		Mtime:      info.ModTime().UnixMilli(),
 		Size:       info.Size(),
 	}
-	results := c.materializeFileSearchResults(ctx, plugin.Query{}, []filesearch.SearchResult{item}, fileSearchSortRefinementRelevance, false, &fileSearchQueryDiagnostics{})
+	results := c.materializeFileSearchResults(ctx, plugin.Query{}, []filesearch.SearchResult{item}, false, &fileSearchQueryDiagnostics{})
 	if len(results) == 0 {
 		return nil, fmt.Errorf("failed to restore file: %s", path)
 	}
@@ -1447,6 +1523,11 @@ func (c *FileSearchPlugin) indexFilesFromScratch(ctx context.Context) {
 	if c.engine == nil {
 		return
 	}
+	// Show feedback before closing the old readers and resetting persisted data.
+	c.cancelCompletionToolbarHold()
+	c.syncToolbarMsgWithStatus(ctx, filesearch.StatusSnapshot{
+		IsIndexing: true, ActiveRunKind: filesearch.RunKindFull, ActiveRunStatus: filesearch.RunStatusPlanning,
+	}, false)
 	generation := c.nextContentSearchGeneration()
 	c.stopContentCrawlWork()
 
@@ -1462,6 +1543,7 @@ func (c *FileSearchPlugin) indexFilesFromScratch(ctx context.Context) {
 		if err := c.engine.RebuildIndex(rebuildCtx); err != nil {
 			c.api.Log(rebuildCtx, plugin.LogLevelError, "Failed to reset file search index: "+err.Error())
 			c.api.Notify(rebuildCtx, "i18n:plugin_file_index_files_failed")
+			c.syncToolbarMsgWithStatus(rebuildCtx, filesearch.StatusSnapshot{ErrorRootCount: 1, LastError: err.Error()}, false)
 			return
 		}
 		c.syncUserRoots(rebuildCtx)
@@ -1482,7 +1564,6 @@ func (c *FileSearchPlugin) indexFilesFromScratch(ctx context.Context) {
 func (c *FileSearchPlugin) buildFileSearchRefinements(ctx context.Context) []plugin.QueryRefinement {
 	return []plugin.QueryRefinement{
 		c.buildFileSearchTypeRefinement(ctx),
-		c.buildFileSearchSortRefinement(),
 	}
 }
 
@@ -1518,26 +1599,6 @@ func fileSearchTypeRefinementOptions(includeContent bool) []plugin.QueryRefineme
 	return options
 }
 
-func (c *FileSearchPlugin) buildFileSearchSortRefinement() plugin.QueryRefinement {
-	// Feature addition: sort stays plugin-owned because the indexed engine owns
-	// the metadata used for modified-time and size ordering. Relevance remains
-	// the default so the existing search ranking is unchanged until selected.
-	return plugin.QueryRefinement{
-		Id:           fileSearchSortRefinementKey,
-		Title:        "i18n:plugin_file_refinement_sort",
-		Type:         plugin.QueryRefinementTypeSort,
-		DefaultValue: []string{fileSearchSortRefinementRelevance},
-		Hotkey:       fileSearchPlatformHotkey("s"),
-		Persist:      false,
-		Options: []plugin.QueryRefinementOption{
-			{Value: fileSearchSortRefinementRelevance, Title: "i18n:plugin_file_refinement_sort_relevance"},
-			{Value: fileSearchSortRefinementName, Title: "i18n:plugin_file_refinement_sort_name"},
-			{Value: fileSearchSortRefinementModified, Title: "i18n:plugin_file_refinement_sort_modified"},
-			{Value: fileSearchSortRefinementSize, Title: "i18n:plugin_file_refinement_sort_size"},
-		},
-	}
-}
-
 func fileSearchPlatformHotkey(key string) string {
 	return util.PrimaryHotkey(key)
 }
@@ -1551,16 +1612,7 @@ func selectedFileSearchType(query plugin.Query) string {
 	}
 }
 
-func selectedFileSearchSort(query plugin.Query) string {
-	switch query.Refinements[fileSearchSortRefinementKey] {
-	case fileSearchSortRefinementName, fileSearchSortRefinementModified, fileSearchSortRefinementSize:
-		return query.Refinements[fileSearchSortRefinementKey]
-	default:
-		return fileSearchSortRefinementRelevance
-	}
-}
-
-func refineFileSearchResults(results []filesearch.SearchResult, selectedType string, selectedSort string, limit int) []filesearch.SearchResult {
+func refineFileSearchResults(results []filesearch.SearchResult, selectedType string, limit int) []filesearch.SearchResult {
 	refined := make([]filesearch.SearchResult, 0, len(results))
 	for _, result := range results {
 		switch selectedType {
@@ -1576,39 +1628,10 @@ func refineFileSearchResults(results []filesearch.SearchResult, selectedType str
 		refined = append(refined, result)
 	}
 
-	switch selectedSort {
-	case fileSearchSortRefinementName:
-		sort.SliceStable(refined, func(i, j int) bool {
-			leftName := strings.ToLower(refined[i].Name)
-			rightName := strings.ToLower(refined[j].Name)
-			if leftName == rightName {
-				return refined[i].Path < refined[j].Path
-			}
-			return leftName < rightName
-		})
-	case fileSearchSortRefinementModified:
-		sort.SliceStable(refined, func(i, j int) bool {
-			return refined[i].Mtime > refined[j].Mtime
-		})
-	case fileSearchSortRefinementSize:
-		sort.SliceStable(refined, func(i, j int) bool {
-			return refined[i].Size > refined[j].Size
-		})
-	}
-
 	if limit > 0 && len(refined) > limit {
 		return append([]filesearch.SearchResult(nil), refined[:limit]...)
 	}
 	return refined
-}
-
-// fileSearchRefinementSortScore keeps explicit sort refinement order stable after manager-side score sorting.
-func fileSearchRefinementSortScore(index int, count int) int64 {
-	if count <= 0 {
-		return 0
-	}
-
-	return int64(count-index) * fileSearchRefinementSortScoreStep
 }
 
 func resolveFileSearchResultIcon(ctx context.Context, result filesearch.SearchResult, fileTypeIcons map[string]common.WoxImage, diagnostics *fileSearchQueryDiagnostics) common.WoxImage {
@@ -1712,8 +1735,8 @@ func (c *FileSearchPlugin) syncUserRoots(ctx context.Context) {
 
 // getEngineRootPaths returns the local name-index roots. Filename directories
 // are omitted when the Windows service already owns full-disk filename search.
-// Content crawl still reads candidates from this index, so enabled content
-// directories stay included.
+// Content directories stay included here; the engine omits those already
+// covered by native volumes and scans only the remaining configured roots.
 func (c *FileSearchPlugin) getEngineRootPaths(ctx context.Context) []string {
 	var paths []string
 	if !c.usesServiceFilenameIndex() {
@@ -2013,11 +2036,11 @@ func (c *FileSearchPlugin) syncToolbarMsgWithStatus(ctx context.Context, status 
 		return
 	}
 
-	if !completionSummary && !statusHasToolbarError(status) && c.shouldHoldCompletionToolbar() {
+	if !completionSummary && !statusHasToolbarError(status) && c.shouldHoldCompletionToolbar() && status.ActiveRunKind != filesearch.RunKindFull {
 		// Bug fix: the completion hold used to protect only against the idle clear
 		// emitted after the scanner removed its transient run state. A quick follow-up
 		// incremental run could still replace the "Indexed ..." summary in the next
-		// frame, so keep non-error progress behind the minimum completion window.
+		// frame. A newly started full rebuild must replace the summary immediately.
 		return
 	}
 
@@ -2146,17 +2169,23 @@ func (c *FileSearchPlugin) buildFullIndexCompletedToolbarTitle(ctx context.Conte
 
 func (c *FileSearchPlugin) buildIndexingToolbarTitle(ctx context.Context, status filesearch.StatusSnapshot) string {
 	indexedFileCount := status.ActiveRunFileCount
-	translationKey := "plugin_file_status_indexing_progress"
 	switch status.ActiveRunKind {
 	case filesearch.RunKindFull:
-		if status.ActiveRunStatus == filesearch.RunStatusFinalizing {
-			// Feature addition: full indexing now reports the deferred SQLite/FTS
-			// save phase explicitly. The previous rate-only title stopped changing
-			// once scan jobs finished, which made long bulk finalization look like a
-			// stalled or silent toolbar until the completion summary arrived.
-			return c.api.GetTranslation(ctx, "plugin_file_status_full_indexing_saving")
+		elapsed := c.formatFileSearchIndexDuration(ctx, status.ActiveRunElapsedMs)
+		if status.ActiveRunElapsedMs <= 0 {
+			elapsed = fmt.Sprintf(c.api.GetTranslation(ctx, "plugin_file_status_index_duration_seconds"), 0)
 		}
-		translationKey = "plugin_file_status_full_indexing_progress"
+		if status.ActiveRunStatus == filesearch.RunStatusFinalizing {
+			// Column construction and publication can outlast ingestion. Keep the
+			// count and elapsed time visible instead of freezing the last scan rate.
+			return fmt.Sprintf(c.api.GetTranslation(ctx, "plugin_file_status_full_indexing_saving"), formatFileSearchCount(indexedFileCount), elapsed)
+		}
+		return fmt.Sprintf(
+			c.api.GetTranslation(ctx, "plugin_file_status_full_indexing_progress"),
+			formatFileSearchCount(indexedFileCount),
+			formatFileSearchCount(estimateActiveIndexRate(indexedFileCount, status.ActiveRunElapsedMs)),
+			elapsed,
+		)
 	case filesearch.RunKindIncremental:
 		if status.ActiveJobKind == filesearch.JobKindFinalizeRoot && status.ActiveRunStatus == filesearch.RunStatusFinalizing {
 			// UX fix: incremental streaming can write many small SQLite batches while
@@ -2184,7 +2213,7 @@ func (c *FileSearchPlugin) buildIndexingToolbarTitle(ctx context.Context, status
 	// the generic key remains only for legacy/root-only snapshots that do not
 	// carry a run kind yet.
 	return fmt.Sprintf(
-		c.api.GetTranslation(ctx, translationKey),
+		c.api.GetTranslation(ctx, "plugin_file_status_indexing_progress"),
 		formatFileSearchCount(indexedFileCount),
 		formatFileSearchCount(indexRate),
 	)

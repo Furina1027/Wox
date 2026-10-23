@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"wox/common"
+	"wox/network"
 
 	launcherview "wox/ui/launcher/view"
 	previewview "wox/ui/launcher/view/preview"
@@ -45,6 +47,13 @@ func decodeWebViewPreview(previewData string) (webViewPreviewData, error) {
 		if err := json.Unmarshal([]byte(trimmed), &data); err != nil {
 			return webViewPreviewData{}, err
 		}
+		var fields map[string]json.RawMessage
+		_ = json.Unmarshal([]byte(trimmed), &fields)
+		_, hasMode := fields["updateMode"]
+		_, hasScript := fields["script"]
+		if hasMode || hasScript {
+			return webViewPreviewData{}, errors.New("script updates are only valid in UpdateResult")
+		}
 		if strings.TrimSpace(data.URL) == "" && data.HTML == "" {
 			return webViewPreviewData{}, errors.New("preview requires a URL or HTML")
 		}
@@ -63,6 +72,9 @@ func (d webViewPreviewData) content() woxui.WebViewContent {
 
 func (a *App) buildWebViewPreview(previewData string, palette uiPalette, width, height float32) woxwidget.Widget {
 	theme := palette.componentTheme()
+	if network.IsOffline() {
+		return webViewPreviewSemantics("offline", previewview.WebViewPreviewMessage(a.translate("i18n:ui_offline_unavailable"), theme.PreviewText, theme, width, height))
+	}
 	data, err := decodeWebViewPreview(previewData)
 	if err != nil {
 		return webViewPreviewSemantics("error: "+err.Error(), previewview.WebViewPreviewMessage(fmt.Sprintf("Invalid WebView preview: %v", err), theme.ErrorText, theme, width, height))
@@ -79,9 +91,10 @@ func (a *App) buildWebViewPreview(previewData string, palette uiPalette, width, 
 		return webViewPreviewSemantics("loading", previewview.WebViewPreviewLoading(theme, width, height))
 	}
 	content := data.content()
+	content.DocumentKey = a.webViewDocumentKey()
 	content.CornerRadius = previewview.WebViewPreviewCornerRadius
 	return webViewPreviewSemantics(webViewPreviewReadyValue(data), previewview.WebViewPreview(previewview.WebViewPreviewProps{Width: width, Height: height, Theme: theme, OnPointer: a.window.ForwardEmbeddedSurfacePointer, OnEscape: a.handleWebViewFallbackEscape, OnBounds: func(bounds woxui.Rect) {
-		if a.webViewPreviewData != previewData || a.webViewPreviewError != "" {
+		if network.IsOffline() || a.webViewPreviewData != previewData || a.webViewPreviewError != "" || content.DocumentKey != a.webViewDocumentKey() {
 			return
 		}
 		a.syncWebViewActionHotkey()
@@ -416,14 +429,32 @@ func (a *App) canHideWebViewPage() bool {
 	return a.isWebViewFullPreviewWindow() && a.hasCacheableWebViewPreviewLocked()
 }
 
-// closeWebViewPage destroys the native browser. Full-preview hotkey windows close
-// immediately; typed queries stay open on `webview` so the next show cannot reload the site.
+// closeWebViewPage restores search previews to their owner rather than switching every browser to the WebView plugin.
 func (a *App) closeWebViewPage() {
+	if a.webViewFullscreen {
+		a.exitWebViewPreviewMode()
+		return
+	}
 	a.resetWebView()
 	a.deactivateWebViewPreview()
-	if a.isWebViewFullPreviewWindow() {
+	if a.isWebViewFullPreviewWindow() || (a.queryContext.PluginID != common.WebViewPluginID && launcherPreviewRatio(a.layout, false) == 0) {
 		if err := a.hideWindow(true); err != nil {
 			util.GetLogger().Error(a.lifecycleCtx, fmt.Sprintf("close full-preview webview page: %v", err))
+		}
+		return
+	}
+	if a.queryContext.PluginID != common.WebViewPluginID {
+		// HTML and media file previews share the native browser. Suppress the pane
+		// until manual reopening or the next query so reconciliation cannot reload it.
+		a.reconcilePreviewVisibility()
+		visible := false
+		a.previewVisibility.visible = &visible
+		a.reconcileSelectedPreview()
+		a.restoreQueryFocusAfterShow()
+		a.restoreQueryTextInput()
+		_ = a.applyWindowBounds()
+		if a.window != nil {
+			_ = a.window.Invalidate()
 		}
 		return
 	}
@@ -481,4 +512,13 @@ func isWebViewPreviewURL(rawURL string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")
+}
+
+// webViewDocumentKey scopes native inline documents to one query result.
+func (a *App) webViewDocumentKey() string {
+	if a.selected < 0 || a.selected >= len(a.results) {
+		return ""
+	}
+	key, _ := json.Marshal([]string{a.sessionID, a.resultsQueryID, a.results[a.selected].ID})
+	return string(key)
 }

@@ -5,14 +5,17 @@ import (
 	"strings"
 
 	"wox/util"
+	"wox/util/filesearch/column"
+	"wox/util/fuzzymatch"
 )
 
-// queryPlan is the shared query normalization contract for the single SQLite
-// search provider. The old in-memory query index kept many provider-specific
-// recall structures in this file; keeping only the plan and scorer here makes
-// the runtime flow easier to follow: SQLite recalls candidates, then this code
-// reranks them with the same wildcard, path, extension, and pinyin semantics.
+// queryPlan and its scorer define the common semantics after the column
+// provider's conservative candidate filters: wildcard, path, extension and
+// pinyin queries behave the same for native volumes and configured roots.
 type queryPlan struct {
+	pattern               *fuzzymatch.PreparedPattern
+	pathPattern           *fuzzymatch.PreparedPattern
+	patternASCII          bool
 	andTerms              []SearchQuery
 	raw                   string
 	rawLower              string
@@ -33,6 +36,7 @@ type queryPlan struct {
 	postIntersectionLimit int
 	preRerankLimit        int
 	shortQueryLength      int
+	namePairs             []int
 }
 
 type docRecord struct {
@@ -40,6 +44,11 @@ type docRecord struct {
 	IsDir          bool
 	PinyinFull     string
 	PinyinInitials string
+	// Column path queries borrow a basename and a shared directory until a
+	// full path is actually needed for a result, wildcard, or quoted phrase.
+	nameText    string
+	directory   *queryDirectory
+	pathKeyText string
 }
 
 const (
@@ -67,7 +76,7 @@ func buildQueryPlan(query SearchQuery) *queryPlan {
 
 	rawLower := normalizeIndexText(raw)
 	lettersDigits := keepLettersAndDigits(rawLower)
-	pathLike := strings.ContainsAny(recallRaw, `/\`)
+	pathLike := strings.ContainsAny(inputRaw, `/\`)
 	pathQuery := normalizePathQuery(recallRaw)
 	pathSegments := splitDirectorySegments(pathQuery)
 
@@ -85,6 +94,8 @@ func buildQueryPlan(query SearchQuery) *queryPlan {
 
 	plan := &queryPlan{
 		raw:                raw,
+		pattern:            fuzzymatch.PreparePattern(strings.TrimSpace(raw)),
+		pathPattern:        fuzzymatch.PreparePattern(pathQuery),
 		rawLower:           rawLower,
 		rawLettersDigits:   lettersDigits,
 		pathLike:           pathLike,
@@ -125,6 +136,27 @@ func buildQueryPlan(query SearchQuery) *queryPlan {
 		plan.preRerankLimit = 0
 	}
 
+	plan.patternASCII = true
+	for _, c := range raw {
+		if c >= 128 {
+			plan.patternASCII = false
+			break
+		}
+	}
+	if len(plan.andTerms) > 0 {
+		for _, term := range plan.andTerms {
+			plan.namePairs = append(plan.namePairs, term.plan.namePairs...)
+		}
+	} else if query.wildcard != nil {
+		for _, literal := range wildcardLiterals {
+			plan.namePairs = column.NamePairClasses(literal, plan.namePairs)
+		}
+	} else {
+		plan.namePairs = column.NamePairClasses(raw, plan.namePairs)
+	}
+	for _, phrase := range plan.exactNamePhrases {
+		plan.namePairs = column.NamePairClasses(phrase, plan.namePairs)
+	}
 	return plan
 }
 
@@ -132,18 +164,17 @@ func buildQueryPlan(query SearchQuery) *queryPlan {
 // A large path substring bonus must never outrank a filename satisfying every
 // condition. Explicit path queries keep their existing path-oriented ranking.
 func scoreDocAgainstQuery(query SearchQuery, record docRecord) (bool, int64) {
-	if query.plan == nil || query.plan.pathLike || query.wildcard != nil {
+	if query.plan == nil || query.plan.pathLike {
 		return scoreDocMatch(query, record, false)
+	}
+	if query.wildcard != nil {
+		return scoreDocMatch(query, record, true)
 	}
 	const namePriorityScore = int64(1000000)
 	if nameMatched, nameScore := scoreDocMatch(query, record, true); nameMatched {
 		return true, namePriorityScore + min(max(nameScore, 0), namePriorityScore-1)
 	}
-	matched, score := scoreDocMatch(query, record, false)
-	if !matched {
-		return false, 0
-	}
-	return true, min(max(score, 0), namePriorityScore-1)
+	return false, 0
 }
 
 // scoreDocMatch shares matching semantics between full-path eligibility and
@@ -159,12 +190,13 @@ func scoreDocMatch(query SearchQuery, record docRecord, nameOnly bool) (bool, in
 	}
 	if nameOnly {
 		record.Path = record.name()
+		record.nameText, record.directory = "", nil
 	}
 	if !recordMatchesExactPhrases(plan, record) {
 		return false, 0
 	}
 	if query.wildcard != nil {
-		return query.wildcard.match(record.name(), record.Path)
+		return query.wildcard.match(record.name(), record.fullPath())
 	}
 	if len(plan.andTerms) > 0 {
 		var total int64
@@ -203,21 +235,16 @@ func scoreDocMatch(query SearchQuery, record docRecord, nameOnly bool) (bool, in
 		}
 	}
 
-	nameScore := maybeScoreFuzzy(record.name(), plan.raw, plan.usePinyin)
-	updateBest(nameScore.matched, nameScore.score+4000)
+	// A basename cannot contain a path separator. Avoid preparing/scoring it for
+	// mandatory path clauses; AND terms without separators still score normally.
+	if !strings.Contains(plan.raw, "/") && !(util.IsWindows() && strings.Contains(plan.raw, `\`)) {
+		nameScore := maybeScoreFuzzy(record.name(), plan.raw, plan.usePinyin)
+		updateBest(nameScore.matched, nameScore.score+4000)
+	}
 
-	pathTarget := record.Path
-	if !record.IsDir {
-		pathTarget = record.parentPath()
-	}
-	pathQuery := plan.raw
-	if plan.pathLike {
-		pathTarget = record.directoryPath()
-		pathQuery = plan.pathQuery
-	}
 	if !nameOnly {
-		pathMatched, pathScore := scorePathMatch(pathTarget, pathQuery)
-		updateBest(pathMatched, pathScore+1500)
+		pathMatch := record.pathMatch(plan)
+		updateBest(pathMatch.matched, pathMatch.score+1500)
 	}
 
 	if plan.usePinyin && !plan.pathLike && plan.rawLettersDigits != "" {
@@ -301,15 +328,53 @@ func (record docRecord) directoryPath() string {
 }
 
 func (record docRecord) name() string {
+	if record.directory != nil {
+		return record.nameText
+	}
 	return filepath.Base(record.Path)
 }
 
 func (record docRecord) parentPath() string {
+	if record.directory != nil {
+		return record.directory.path
+	}
 	return filepath.Dir(record.Path)
 }
 
 func (record docRecord) pathKey() string {
-	return normalizeIndexText(normalizePath(record.Path))
+	if record.pathKeyText != "" {
+		return record.pathKeyText
+	}
+	return normalizeIndexText(normalizePath(record.fullPath()))
+}
+
+func (record docRecord) fullPath() string {
+	if record.directory != nil {
+		return filepath.Join(record.directory.path, record.nameText)
+	}
+	return record.Path
+}
+
+// pathMatch reuses a directory's score across its children and AND clauses.
+func (record docRecord) pathMatch(plan *queryPlan) fuzzyScore {
+	if record.directory != nil {
+		return record.directory.match(plan)
+	}
+	if record.pathKeyText != "" {
+		return scorePreparedDirectory(record.pathKeyText, plan)
+	}
+	target, query := record.Path, plan.raw
+	if !record.IsDir {
+		target = record.parentPath()
+	}
+	if plan.pathLike {
+		target, query = record.directoryPath(), plan.pathQuery
+	}
+	if plan.pathLike {
+		return scorePreparedDirectory(normalizePathQuery(target), plan)
+	}
+	matched, score := scorePathMatch(target, query)
+	return fuzzyScore{matched: matched, score: score}
 }
 
 func normalizeIndexText(value string) string {
@@ -318,10 +383,6 @@ func normalizeIndexText(value string) string {
 		return ""
 	}
 	return strings.ToLower(filepath.ToSlash(value))
-}
-
-func normalizeEntryPathKey(entry EntryRecord) string {
-	return normalizeIndexText(entry.NormalizedPath)
 }
 
 func normalizeExactPhrases(phrases []string) []string {
@@ -352,44 +413,10 @@ func normalizeExactPathPhrases(phrases []string) []string {
 	return normalized
 }
 
-func shouldDropRedundantPinyinPayload(normalizedName string, pinyinFull string, pinyinInitials string) bool {
-	if normalizedName == "" || pinyinFull == "" || pinyinInitials == "" {
-		return false
-	}
-	if keepLettersAndDigits(normalizedName) != normalizedName {
-		return false
-	}
-	return pinyinFull == normalizedName && pinyinInitials == normalizedName
-}
-
 func normalizeExtension(ext string) string {
 	ext = strings.TrimSpace(strings.ToLower(ext))
 	ext = strings.TrimPrefix(ext, ".")
 	return ext
-}
-
-func uniqueNgrams(value string, size int) []string {
-	value = strings.TrimSpace(value)
-	if value == "" || size <= 0 {
-		return nil
-	}
-
-	runes := []rune(value)
-	if len(runes) < size {
-		return nil
-	}
-
-	seen := map[string]struct{}{}
-	grams := make([]string, 0, len(runes)-size+1)
-	for i := 0; i+size <= len(runes); i++ {
-		gram := string(runes[i : i+size])
-		if _, ok := seen[gram]; ok {
-			continue
-		}
-		seen[gram] = struct{}{}
-		grams = append(grams, gram)
-	}
-	return grams
 }
 
 func splitDirectorySegments(path string) []string {

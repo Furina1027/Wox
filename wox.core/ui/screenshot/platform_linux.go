@@ -4,7 +4,7 @@ package screenshot
 
 /*
 #include <stdlib.h>
-#include "../runtime/native_linux.h"
+#include "../runtime/internal/window/native_linux.h"
 int32_t wox_screenshot_cursor_position(float *x, float *y);
 int32_t wox_screenshot_set_cursor_position(int32_t x, int32_t y);
 */
@@ -28,6 +28,7 @@ func captureScreenshotPlatform(options ScreenshotOptions) (ScreenshotResult, err
 	time.Sleep(80 * time.Millisecond)
 	var cursorX, cursorY C.float
 	hasCapturedCursor := C.wox_screenshot_cursor_position(&cursorX, &cursorY) == 0
+	selectionWindows := captureLinuxScreenshotWindows()
 	source, bounds, err := captureLinuxX11Desktop()
 	var waylandCapture linuxDesktopCapture
 	if errors.Is(err, errLinuxPortalCaptureRequired) {
@@ -41,7 +42,11 @@ func captureScreenshotPlatform(options ScreenshotOptions) (ScreenshotResult, err
 	if err != nil {
 		return ScreenshotResult{}, err
 	}
+	windowCandidates, objectQuery := linuxScreenshotObjectSelection(selectionWindows, bounds, source)
 	platform := screenshotEditorPlatform{
+		windowCandidates:  windowCandidates,
+		displayCandidates: screenshotSelectionDisplayBounds(options.capturedDisplays, bounds, false),
+		objectQuery:       objectQuery,
 		setWindowBounds: func(window *Window) error {
 			return window.SetBounds(bounds)
 		},

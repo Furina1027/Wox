@@ -23,6 +23,13 @@ var logger *util.Log
 type Manager struct {
 	woxSetting *WoxSetting
 	mruManager *MRUManager
+	// autoBackupOnce keeps the daily backup loop from being scheduled twice.
+	autoBackupOnce sync.Once
+	// backupMu guards the single in-flight backup and its watchers.
+	backupMu       sync.Mutex
+	backupRunning  bool
+	backupWatchSeq int
+	backupWatchers []backupWatch
 }
 
 const queryCompletionFeedbackLimit = 1000
@@ -71,8 +78,6 @@ func CurrentUiDensityScale() float32 {
 }
 
 func (m *Manager) Init(ctx context.Context) error {
-	m.StartAutoBackup(ctx)
-
 	if err := m.checkAutostart(ctx); err != nil {
 		logger.Error(ctx, fmt.Sprintf("failed to check autostart status: %v", err))
 	}
@@ -176,24 +181,40 @@ func (m *Manager) ClearActionedResults(ctx context.Context, resultHash ResultHas
 	return true
 }
 
-func (m *Manager) PinResult(ctx context.Context, pluginId string, resultTitle string, resultSubTitle string) {
-	util.GetLogger().Info(ctx, fmt.Sprintf("pin result: %s, %s", resultTitle, resultSubTitle))
-	resultHash := NewResultHash(pluginId, resultTitle, resultSubTitle)
+// PinResult pins one score identity for a query text. The same result can stay pinned under other queries.
+func (m *Manager) PinResult(ctx context.Context, resultHash ResultHash, query string) {
+	query = normalizePinedQuery(query)
 	results := m.woxSetting.PinedResults.Get()
-	results.Store(resultHash, true)
+	current, _ := results.Load(resultHash)
+	if current.hasQuery(query) {
+		return
+	}
+	util.GetLogger().Info(ctx, fmt.Sprintf("pin result: %s, query: %s", resultHash, query))
+	results.Store(resultHash, current.withQuery(query))
 	m.woxSetting.PinedResults.Set(results)
 }
 
-func (m *Manager) IsPinedResult(ctx context.Context, pluginId string, resultTitle string, resultSubTitle string) bool {
-	resultHash := NewResultHash(pluginId, resultTitle, resultSubTitle)
-	return m.woxSetting.PinedResults.Get().Exist(resultHash)
+// IsPinedResult reports whether this score identity is pinned for the given query text.
+func (m *Manager) IsPinedResult(ctx context.Context, resultHash ResultHash, query string) bool {
+	current, ok := m.woxSetting.PinedResults.Get().Load(resultHash)
+	return ok && current.hasQuery(query)
 }
 
-func (m *Manager) UnpinResult(ctx context.Context, pluginId string, resultTitle string, resultSubTitle string) {
-	util.GetLogger().Info(ctx, fmt.Sprintf("unpin result: %s, %s", resultTitle, resultSubTitle))
-	resultHash := NewResultHash(pluginId, resultTitle, resultSubTitle)
+// UnpinResult removes the pin for one query and keeps pins for other queries.
+func (m *Manager) UnpinResult(ctx context.Context, resultHash ResultHash, query string) {
+	query = normalizePinedQuery(query)
 	results := m.woxSetting.PinedResults.Get()
-	results.Delete(resultHash)
+	current, ok := results.Load(resultHash)
+	if !ok || !current.hasQuery(query) {
+		return
+	}
+	util.GetLogger().Info(ctx, fmt.Sprintf("unpin result: %s, query: %s", resultHash, query))
+	updated, keep := current.withoutQuery(query)
+	if keep {
+		results.Store(resultHash, updated)
+	} else {
+		results.Delete(resultHash)
+	}
 	m.woxSetting.PinedResults.Set(results)
 }
 
@@ -221,7 +242,9 @@ func (m *Manager) AddQueryHistory(ctx context.Context, query common.PlainQuery) 
 		histories = histories[len(histories)-1000:]
 	}
 
-	m.woxSetting.QueryHistories.Set(histories)
+	if err := m.woxSetting.QueryHistories.Set(histories); err != nil {
+		util.GetLogger().Error(ctx, fmt.Sprintf("failed to persist query history: %s", err.Error()))
+	}
 }
 
 func plainQueryHistoryEqual(left, right common.PlainQuery) bool {

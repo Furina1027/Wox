@@ -2,13 +2,17 @@ package ui
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"wox/common"
 	"wox/common/icons"
 	"wox/i18n"
 	"wox/setting"
+	"wox/supervisor"
 	"wox/ui/contract"
 	"wox/util"
 	"wox/util/shell"
@@ -40,12 +44,63 @@ func (s *CoreServices) DataBackups(ctx context.Context, sessionID string) ([]con
 
 // CreateDataBackup creates one manual settings backup.
 func (s *CoreServices) CreateDataBackup(ctx context.Context, sessionID string) error {
-	return setting.GetSettingManager().Backup(uiServiceContext(ctx, sessionID), setting.BackupTypeManual)
+	err := setting.GetSettingManager().Backup(uiServiceContext(ctx, sessionID), setting.BackupTypeManual)
+	if errors.Is(err, setting.ErrBackupInProgress) {
+		return contract.ErrBackupInProgress
+	}
+	return err
 }
 
-// RestoreDataBackup replaces current settings with one persisted backup.
+// WatchDataBackup follows the single in-flight backup shared by manual and automatic runs.
+func (s *CoreServices) WatchDataBackup(_ context.Context, _ string, onChange func(running bool, failure error)) func() {
+	if onChange == nil {
+		return func() {}
+	}
+	return setting.GetSettingManager().WatchBackup(onChange)
+}
+
+// RestoreDataBackup asks the supervisor to replace user data after this process exits.
 func (s *CoreServices) RestoreDataBackup(ctx context.Context, sessionID string, backupID string) error {
-	return setting.GetSettingManager().Restore(uiServiceContext(ctx, sessionID), backupID)
+	return RequestUserDataRestore(uiServiceContext(ctx, sessionID), backupID)
+}
+
+// DeleteDataBackup removes one finished backup directory.
+func (s *CoreServices) DeleteDataBackup(ctx context.Context, sessionID string, backupID string) error {
+	return setting.GetSettingManager().DeleteBackup(uiServiceContext(ctx, sessionID), backupID)
+}
+
+// RequestUserDataRestore asks the supervisor to replace user data after this process exits.
+func RequestUserDataRestore(ctx context.Context, backupID string) error {
+	backups, err := setting.GetSettingManager().FindAllBackups(ctx)
+	if err != nil {
+		return err
+	}
+	var backupPath string
+	for _, backup := range backups {
+		if backup.Id == backupID {
+			backupPath = backup.Path
+			break
+		}
+	}
+	if backupPath == "" {
+		return fmt.Errorf("backup not found: %s", backupID)
+	}
+	payload, err := json.Marshal(map[string]string{
+		"backupPath":  backupPath,
+		"userDataDir": util.GetLocation().GetUserDataDirectory(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := supervisor.Submit(ctx, supervisor.Task{
+		Type:     supervisor.TaskRestore,
+		RunAfter: supervisor.RunAfterExit,
+		Payload:  payload,
+	}); err != nil {
+		return err
+	}
+	GetUIManager().ExitApp(ctx)
+	return nil
 }
 
 // ChangeDataLocation moves user-managed data through the core UI manager.
@@ -56,7 +111,7 @@ func (s *CoreServices) ChangeDataLocation(ctx context.Context, sessionID string,
 // ClearLogs removes historical logs and preserves the existing user notification behavior.
 func (s *CoreServices) ClearLogs(ctx context.Context, sessionID string) error {
 	ctx = uiServiceContext(ctx, sessionID)
-	if err := util.GetLogger().ClearHistory(); err != nil {
+	if err := util.GetLogger().ClearHistory(filepath.Base(supervisor.GetManager().SupervisorLogPath())); err != nil {
 		GetUIManager().GetUI(ctx).Notify(ctx, common.NotifyMsg{
 			Icon:           icons.Get(icons.BrandWox).String(),
 			Text:           fmt.Sprintf(i18n.GetI18nManager().TranslateWox(ctx, "ui_data_log_clear_notify_failed"), err.Error()),

@@ -12,10 +12,13 @@ var ErrScreenshotDisplayLayoutChanged = errors.New("screenshot display layout is
 
 // ScreenshotOptions configures one interactive desktop-region capture.
 type ScreenshotOptions struct {
+	// OnClipboardReady runs on the capture worker before file writes and editable-scene preparation.
+	OnClipboardReady      func()
 	capturedDisplays      []screenshotDisplay
 	SaveEditableScene     bool
 	EditScreenshotPath    string
 	ExportFilePath        string
+	ExportDirectory       string
 	CopyToClipboard       bool
 	HideAnnotationToolbar bool
 	AutoConfirm           bool
@@ -129,12 +132,10 @@ func CaptureScreenshot(options ScreenshotOptions) (ScreenshotResult, error) {
 	if options.EditScreenshotPath != "" {
 		return editSavedScreenshot(options)
 	}
-	if options.SaveEditableScene {
-		// Snapshot before capture; a later layout must never be attributed to these pixels.
-		displays, err := screen.ListDisplays()
-		if err == nil {
-			options.capturedDisplays = screenshotDisplayLayout(displays)
-		}
+	// Freeze monitor geometry for both selection fallback and editable scenes before the capture overlays appear.
+	displays, err := screen.ListDisplays()
+	if err == nil {
+		options.capturedDisplays = screenshotDisplayLayout(displays)
 	}
 	return captureScreenshotPlatform(options)
 }

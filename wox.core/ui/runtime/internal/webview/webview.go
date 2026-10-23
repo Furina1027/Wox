@@ -20,6 +20,7 @@ var ErrUnavailable = errors.New("woxui: system WebView is unavailable")
 
 // Content describes one embedded browser document while Rect is controlled separately by layout.
 type Content struct {
+	DocumentKey   string
 	URL           string
 	HTML          string
 	InjectCSS     string
@@ -82,6 +83,7 @@ type Driver interface {
 
 // Controller owns the portable lifecycle around one platform WebView driver.
 type Controller struct {
+	scripts  scriptState
 	driver   Driver
 	dispatch func(func()) error
 	visible  atomic.Bool
@@ -90,6 +92,9 @@ type Controller struct {
 	htmlRetained   bool
 	htmlTimer      *time.Timer
 	htmlGeneration uint64
+	// backgroundSessions records whether a cache-enabled URL page was shown. The driver keeps
+	// such pages alive after Hide until Reset or Close; every other page is discarded on Hide.
+	backgroundSessions bool
 }
 
 // New creates a portable WebView controller around one native driver.
@@ -154,12 +159,16 @@ func (c *Controller) Show(content Content, bounds Rect, scale float32) error {
 		if c.driver == nil {
 			return ErrUnavailable
 		}
+		// A driver can allocate a session before reporting a load failure, so
+		// retention is recorded before the native call.
 		if normalized.HTML != "" {
-			// A driver can allocate a session before reporting a load failure;
-			// the subsequent hide still needs to release that temporary entry.
 			c.htmlRetained = true
+		} else if !normalized.CacheDisabled && normalized.CacheKey != "" {
+			c.backgroundSessions = true
 		}
+		normalized = c.prepareDocument(normalized)
 		if err := c.driver.Show(normalized, bounds, scale); err != nil {
+			c.invalidateScripts()
 			if !c.htmlVisible {
 				c.scheduleHTMLExpiry()
 			}
@@ -185,6 +194,7 @@ func (c *Controller) Hide() error {
 		if c.driver == nil {
 			return nil
 		}
+		c.invalidateScripts()
 		if err := c.driver.Hide(); err != nil {
 			return err
 		}
@@ -238,14 +248,22 @@ func (c *Controller) Reset() error {
 		if c.driver == nil {
 			return nil
 		}
+		c.invalidateScripts()
 		if err := c.driver.Reset(); err != nil {
 			return err
 		}
 		c.cancelHTMLExpiry()
-		c.htmlRetained, c.htmlVisible = false, false
+		c.htmlRetained, c.htmlVisible, c.backgroundSessions = false, false, false
 		c.visible.Store(false)
 		return nil
 	})
+}
+
+// RetainsBackgroundSessions reports whether a hidden page is intentionally kept alive,
+// such as a site with "keep in background" enabled. Owners may close a controller to
+// reclaim memory only when this is false. It must be called on the owning UI thread.
+func (c *Controller) RetainsBackgroundSessions() bool {
+	return c != nil && c.backgroundSessions
 }
 
 // GoBack navigates the active document backward.
@@ -269,6 +287,7 @@ func (c *Controller) Reload() error {
 	if c == nil || c.driver == nil {
 		return ErrUnavailable
 	}
+	c.invalidateScripts()
 	return c.driver.Reload()
 }
 
@@ -322,10 +341,11 @@ func (c *Controller) Close() {
 	if err := c.call(func() error {
 		c.cancelHTMLExpiry()
 		if c.driver != nil {
+			c.invalidateScripts()
 			c.driver.Close()
 			c.driver = nil
 		}
-		c.htmlRetained, c.htmlVisible = false, false
+		c.htmlRetained, c.htmlVisible, c.backgroundSessions = false, false, false
 		c.visible.Store(false)
 		return nil
 	}); err != nil {

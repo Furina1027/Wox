@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"wox/setting"
 	"wox/telemetry"
 	"wox/ui/contract"
+	woxui "wox/ui/runtime"
 	"wox/util"
 	"wox/util/font"
 	"wox/util/keyboard"
@@ -38,6 +40,8 @@ func (s *CoreServices) GeneralSettings(ctx context.Context, sessionID string) (c
 		FullscreenDetectionSupported:       window.SupportsActiveWindowFullscreen(),
 		IgnoredHotkeyApps:                  append([]setting.IgnoredHotkeyApp(nil), woxSetting.IgnoredHotkeyApps.Get()...),
 		LogLevel:                           util.NormalizeLogLevel(woxSetting.LogLevel.Get()),
+		UseSoftwareRendering:               woxSetting.UseSoftwareRendering.Get(),
+		SoftwareRenderingRestartRequired:   woxSetting.UseSoftwareRendering.Get() != woxui.SoftwareRenderingEnabled(),
 		UsePinYin:                          woxSetting.UsePinYin.Get(),
 		SwitchInputMethodABC:               woxSetting.SwitchInputMethodABC.Get(),
 		HideOnStart:                        woxSetting.HideOnStart.Get(),
@@ -62,10 +66,12 @@ func (s *CoreServices) GeneralSettings(ctx context.Context, sessionID string) (c
 		ReleaseChannel:                     woxSetting.ReleaseChannel.Get(),
 		EnableAnonymousUsageStats:          woxSetting.EnableAnonymousUsageStats.Get(),
 		EnablePrivacyMode:                  privacy.IsEnabled(),
+		EnableOfflineMode:                  woxSetting.EnableOfflineMode.Get(),
 		CustomPythonPath:                   woxSetting.CustomPythonPath.Get(),
 		CustomNodejsPath:                   woxSetting.CustomNodejsPath.Get(),
 		CloudSyncServerURL:                 woxSetting.CloudSyncServerUrl.Get(),
 		CloudSyncDisabledPlugins:           append([]string(nil), woxSetting.CloudSyncDisabledPlugins.Get()...),
+		HiddenPluginStores:                 append([]string(nil), woxSetting.HiddenPluginStores.Get()...),
 		AppWidth:                           woxSetting.AppWidth.Get(),
 		MaxResultCount:                     woxSetting.MaxResultCount.Get(),
 		UIDensity:                          woxSetting.UiDensity.Get(),
@@ -203,6 +209,10 @@ func (s *CoreServices) UpdateGeneralSetting(ctx context.Context, sessionID strin
 		if err := woxSetting.LogLevel.Set(updatedValue); err != nil {
 			return err
 		}
+	case "UseSoftwareRendering":
+		if err := woxSetting.UseSoftwareRendering.Set(boolValue); err != nil {
+			return err
+		}
 	case "UsePinYin":
 		woxSetting.UsePinYin.Set(boolValue)
 	case "SwitchInputMethodABC":
@@ -240,6 +250,12 @@ func (s *CoreServices) UpdateGeneralSetting(ctx context.Context, sessionID strin
 			return err
 		}
 		woxSetting.CloudSyncDisabledPlugins.Set(disabledPlugins)
+	case "HiddenPluginStores":
+		var stores []string
+		if err := json.Unmarshal([]byte(value), &stores); err != nil {
+			return err
+		}
+		woxSetting.HiddenPluginStores.Set(normalizeHiddenPluginStores(stores))
 	case "TrayQueries":
 		trayQueries, err := decodeTrayQueries(value)
 		if err != nil {
@@ -324,6 +340,10 @@ func (s *CoreServices) UpdateGeneralSetting(ctx context.Context, sessionID strin
 		if !boolValue {
 			telemetry.DeleteTelemetryState(ctx)
 		}
+	case "EnableOfflineMode":
+		if err := setOfflineMode(ctx, woxSetting, boolValue); err != nil {
+			return err
+		}
 	case "EnablePrivacyMode":
 		if err := privacy.SetEnabled(boolValue, woxSetting); err != nil {
 			return err
@@ -332,7 +352,7 @@ func (s *CoreServices) UpdateGeneralSetting(ctx context.Context, sessionID strin
 		return fmt.Errorf("unknown setting key: %s", key)
 	}
 
-	if key != "EnablePrivacyMode" {
+	if key != "EnablePrivacyMode" && key != "EnableOfflineMode" {
 		if err := privacy.RefreshPreservedSettings(woxSetting); err != nil {
 			return err
 		}
@@ -371,4 +391,28 @@ func decodeTrayQueries(value string) ([]setting.TrayQuery, error) {
 		queries = append(queries, query)
 	}
 	return queries, nil
+}
+
+// normalizeHiddenPluginStores drops blanks and the official catalog. Wox Store stays visible.
+func normalizeHiddenPluginStores(stores []string) []string {
+	seen := map[string]struct{}{}
+	next := make([]string, 0, len(stores))
+	for _, id := range stores {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || id == plugin.OfficialPluginStoreID {
+			continue
+		}
+		if _, found := seen[id]; found {
+			continue
+		}
+		seen[id] = struct{}{}
+		next = append(next, id)
+	}
+	sort.Strings(next)
+	return next
+}
+
+// RestartWox uses the same orderly handoff as the system command.
+func (s *CoreServices) RestartWox(ctx context.Context, sessionID string) error {
+	return GetUIManager().RestartApp(uiServiceContext(ctx, sessionID))
 }

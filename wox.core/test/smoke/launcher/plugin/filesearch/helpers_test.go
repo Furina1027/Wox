@@ -18,6 +18,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
+	"wox/common"
 	"wox/test/automationdriver"
 	"wox/test/smoke"
 	woxui "wox/ui/runtime"
@@ -25,7 +26,7 @@ import (
 )
 
 const (
-	fileSearchPluginID            = "979d6363-025a-4f51-88d3-0b04e9dc56bf"
+	fileSearchPluginID            = common.FileSearchPluginID
 	fileSearchInitialIndexTimeout = 30 * time.Second
 	fileSearchIncrementalTimeout  = 8 * time.Second
 	fileSearchIndexPollInterval   = 25 * time.Millisecond
@@ -33,7 +34,9 @@ const (
 
 var (
 	fileSearchRootsFieldID          = fileSearchSettingFieldID(1)
-	fileSearchIgnorePatternsFieldID = fileSearchSettingFieldID(4)
+	fileSearchIgnorePatternsFieldID = fileSearchSettingFieldID(5)
+	fileSearchContentEnabledFieldID = fileSearchSettingFieldID(7)
+	fileSearchContentRootsFieldID   = fileSearchSettingFieldID(8)
 )
 
 // fileSearchSettingFieldID accounts for the Windows-only file-index-service row.
@@ -95,10 +98,15 @@ func fileSearchNativeAbsolutePath(t *testing.T, raw string) string {
 
 // addFileSearchRoot adds one directory through the installed plugin's real Settings table.
 func addFileSearchRoot(t *testing.T, ctx context.Context, client *automationdriver.Client, root string) int {
+	return addFileSearchRootField(t, ctx, client, root, fileSearchRootsFieldID)
+}
+
+// addFileSearchRootField exercises either filename or content directory settings.
+func addFileSearchRootField(t *testing.T, ctx context.Context, client *automationdriver.Client, root, fieldID string) int {
 	t.Helper()
 	smoke.OpenInstalledPluginSettings(t, ctx, client, fileSearchPluginID)
-	rowIndex := fileSearchSettingTableRowCount(t, ctx, client, fileSearchRootsFieldID)
-	if err := client.Perform(ctx, fileSearchRootsFieldID+"-add", woxui.AccessibilityActionActivate, ""); err != nil {
+	rowIndex := fileSearchSettingTableRowCount(t, ctx, client, fieldID)
+	if err := client.Perform(ctx, fieldID+"-add", woxui.AccessibilityActionActivate, ""); err != nil {
 		t.Fatalf("add File Search root row: %v", err)
 	}
 	if _, err := client.WaitFor(ctx, func(snapshot woxwidget.AutomationSnapshot) bool {
@@ -155,6 +163,11 @@ func waitForFileSearchSettingTableRow(t *testing.T, ctx context.Context, client 
 
 // removeFileSearchRoot restores the plugin setting and waits until the index drops the root.
 func removeFileSearchRoot(t *testing.T, client *automationdriver.Client, root string, rowIndex int) {
+	removeFileSearchRootField(t, client, root, rowIndex, fileSearchRootsFieldID)
+}
+
+// removeFileSearchRootField restores the owning directory table after a case.
+func removeFileSearchRootField(t *testing.T, client *automationdriver.Client, root string, rowIndex int, fieldID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), fileSearchInitialIndexTimeout)
 	defer cancel()
@@ -163,8 +176,8 @@ func removeFileSearchRoot(t *testing.T, client *automationdriver.Client, root st
 		return
 	}
 	smoke.OpenInstalledPluginSettings(t, ctx, client, fileSearchPluginID)
-	waitForFileSearchSettingTableRow(t, ctx, client, fileSearchRootsFieldID, rowIndex)
-	deleteID := fmt.Sprintf("%s-row-%d-delete", fileSearchRootsFieldID, rowIndex)
+	waitForFileSearchSettingTableRow(t, ctx, client, fieldID, rowIndex)
+	deleteID := fmt.Sprintf("%s-row-%d-delete", fieldID, rowIndex)
 	if err := client.Perform(ctx, deleteID, woxui.AccessibilityActionActivate, ""); err != nil {
 		t.Errorf("delete File Search root row %d: %v", rowIndex, err)
 		return
@@ -187,12 +200,13 @@ func removeFileSearchRoot(t *testing.T, client *automationdriver.Client, root st
 	waitForFileSearchDatabaseValue(t, ctx, "roots", root, false, fileSearchInitialIndexTimeout)
 }
 
-// waitForFileSearchDatabaseValue polls the live SQLite index for one exact path.
+// waitForFileSearchDatabaseValue reads configured-root metadata only. Filename
+// readiness is observed through completed product queries, independent of storage.
 func waitForFileSearchDatabaseValue(t *testing.T, ctx context.Context, table, path string, present bool, timeout time.Duration) time.Duration {
 	t.Helper()
 	started := time.Now()
 	deadline := started.Add(timeout)
-	databasePath := filepath.Join(os.Getenv(automationdriver.SharedDataDirectoryEnvironment), "filesearch", "filesearch.db")
+	databasePath := filepath.Join(os.Getenv(automationdriver.SharedDataDirectoryEnvironment), "filesearch", "metadata.db")
 	var lastErr error
 	ticker := time.NewTicker(fileSearchIndexPollInterval)
 	defer ticker.Stop()
@@ -216,7 +230,7 @@ func waitForFileSearchDatabaseValue(t *testing.T, ctx context.Context, table, pa
 }
 
 func fileSearchDatabasePathExists(databasePath, table, path string) (bool, error) {
-	if table != "entries" && table != "roots" {
+	if table != "roots" {
 		return false, fmt.Errorf("unsupported File Search index table %q", table)
 	}
 	database, err := sql.Open("sqlite3", databasePath+"?mode=ro&_busy_timeout=1000")
@@ -265,9 +279,45 @@ func queryFileSearchResult(t *testing.T, ctx context.Context, client *automation
 	return snapshot
 }
 
+// waitForFileSearchResultPath retries fresh, completed Launcher queries until
+// indexing changes become observable. It never opens the filename store.
+func waitForFileSearchResultPath(t *testing.T, ctx context.Context, client *automationdriver.Client, path string, present bool, timeout time.Duration) time.Duration {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	started := time.Now()
+	smoke.ShowLauncher(t, ctx, client)
+	ticker := time.NewTicker(fileSearchIndexPollInterval)
+	defer ticker.Stop()
+	for {
+		snapshot := queryFileSearchSnapshot(t, ctx, client, "f "+filepath.Base(path))
+		smoke.AssertNoDiagnostics(t, snapshot)
+		if _, found := fileSearchResultByPath(snapshot, path); found == present {
+			return time.Since(started)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("File Search result %q present=%t: %v", path, present, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
 func queryFileSearchResultAbsent(t *testing.T, ctx context.Context, client *automationdriver.Client, path string) woxwidget.AutomationSnapshot {
 	t.Helper()
 	query := "f " + filepath.Base(path)
+	snapshot := queryFileSearchSnapshot(t, ctx, client, query)
+	if _, found := fileSearchResultByPath(snapshot, path); found {
+		t.Fatalf("deleted File Search result %q remained visible", path)
+	}
+	smoke.AssertNoDiagnostics(t, snapshot)
+	return snapshot
+}
+
+// queryFileSearchSnapshot accepts a completed empty result set while the index
+// catches up; the generic result helper requires a visible results container.
+func queryFileSearchSnapshot(t *testing.T, ctx context.Context, client *automationdriver.Client, query string) woxwidget.AutomationSnapshot {
+	t.Helper()
 	smoke.ReplaceLauncherQuery(t, ctx, client, "")
 	before, err := client.Snapshot(ctx)
 	if err != nil {
@@ -281,15 +331,15 @@ func queryFileSearchResultAbsent(t *testing.T, ctx context.Context, client *auto
 		_, loadingFound := automationdriver.Find(snapshot, "launcher.query.loading")
 		results, resultsFound := automationdriver.Find(snapshot, "launcher.results")
 		settledResults := !resultsFound || results.Value == "complete"
-		return snapshot.Tree.Generation > before.Tree.Generation && inputFound && input.Value == query && !loadingFound && settledResults
+		if snapshot.Tree.Generation <= before.Tree.Generation || !inputFound || input.Value != query || loadingFound || !settledResults {
+			return false
+		}
+		state, stateErr := client.QueryState(ctx)
+		return stateErr == nil && state.QueryText == query && state.Complete
 	})
 	if err != nil {
 		t.Fatalf("wait for absent File Search query %q: %v", query, err)
 	}
-	if _, found := fileSearchResultByPath(snapshot, path); found {
-		t.Fatalf("deleted File Search result %q remained visible", path)
-	}
-	smoke.AssertNoDiagnostics(t, snapshot)
 	return snapshot
 }
 

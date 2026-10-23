@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"wox/common"
+	"wox/network"
 	"wox/setting"
 	"wox/ui/contract"
 	woxcomponent "wox/ui/launcher/component"
@@ -51,6 +52,7 @@ type App struct {
 	nativeHoverTooltipShown map[string]nativeHoverTooltipIdentity
 	terminalSubscribed      string
 	terminalDesired         atomic.Value
+	openingSettingsShortcut atomic.Bool
 
 	isDev          bool
 	isPrimary      bool
@@ -59,6 +61,7 @@ type App struct {
 	windowID       woxui.WindowID
 	services       contract.Services
 	uiCall         func(func()) error
+	uiPost         func(func()) error
 	windows        *woxui.WindowManager
 	instances      *appInstanceRegistry
 	primary        *App
@@ -98,6 +101,9 @@ type App struct {
 	resultsQueryID            string
 	queryComplete             bool
 	queryTransitionTimer      *time.Timer
+	queryRefreshHoldQueryID   string
+	queryRefreshHoldTimer     *time.Timer
+	queryRefreshSnapshot      *refreshResultSnapshot
 	queryLoading              bool
 	queryLoadingTimer         *time.Timer
 	quickSelectMode           bool
@@ -168,23 +174,29 @@ type App struct {
 	bottomAnchorY float32
 	// automationFocusInstance routes smoke Snapshot/Bounds/Perform to a named
 	// secondary when set; empty keeps the primary launcher surface.
-	automationFocusInstance       string
-	settingsOpen                  bool
-	onboardingOpen                bool
-	onboardingStep                int
-	onboardingChoice              string
-	onboardingChoiceAnchor        woxui.Rect
-	onboardingPermission          contract.MacOSPermissionStatus
-	onboardingLoading             bool
-	onboardingError               string
-	onboardingQueryHotkey         *onboardingQueryHotkeyState
-	onboardingPlugins             onboardingPluginState
-	onboardingTheme               onboardingThemeState
-	permissionFlowHost            *macOSPermissionFlowHost
-	settingsCtx                   settingWindowContext
-	settingTab                    string
-	settingRow                    int
-	settingSaving                 bool
+	automationFocusInstance string
+	settingsOpen            bool
+	onboardingOpen          bool
+	onboardingStep          int
+	onboardingChoice        string
+	onboardingChoiceAnchor  woxui.Rect
+	onboardingPermission    contract.MacOSPermissionStatus
+	onboardingLoading       bool
+	onboardingError         string
+	onboardingQueryHotkey   *onboardingQueryHotkeyState
+	onboardingPlugins       onboardingPluginState
+	onboardingTheme         onboardingThemeState
+	onboardingMigration     onboardingMigrationState
+	permissionFlowHost      *macOSPermissionFlowHost
+	settingsCtx             settingWindowContext
+	settingTab              string
+	settingRow              int
+	settingSaving           bool
+	settingRestarting       bool
+	settingRestartError     string
+	// pendingBuiltInText is a text value whose field already lost focus. It is held
+	// until the pointer click that caused the blur either saves another setting or releases.
+	pendingBuiltInText            *pendingBuiltInText
 	settingFlash                  string
 	settingFlashTimer             *time.Timer
 	settingsInlineTooltip         *settingsInlineTooltipState
@@ -208,25 +220,26 @@ type App struct {
 	refinementTooltipRevision     atomic.Uint64
 	glanceTimer                   *time.Timer
 	// Settings controllers (zero App back-dependency; populated by newApp).
-	generalSettings      *generalSettingsController
-	appearanceSettings   *appearanceSettingsController
-	networkSettings      *networkSettingsController
-	dataSettings         *dataSettingsController
-	cloudSettings        *cloudSettingsController
-	runtimeSettings      *runtimeSettingsController
-	themeSettings        *themeSettingsController
-	pluginSettings       *pluginSettingsController
-	usageSettings        *usageSettingsController
-	updateSettings       *updateSettingsController
-	privacySettings      *privacySettingsController
-	aboutSettings        *aboutSettingsController
-	hotkeySettings       *hotkeySettingsController
-	settingsSearch       *settingsSearchController
-	sharedEdit           *sharedEditState
-	palette              uiPalette
-	densityMetrics       launcherDensityMetrics
-	translations         map[string]string
-	translationsRevision atomic.Uint64
+	generalSettings        *generalSettingsController
+	appearanceSettings     *appearanceSettingsController
+	networkSettings        *networkSettingsController
+	dataSettings           *dataSettingsController
+	cloudSettings          *cloudSettingsController
+	runtimeSettings        *runtimeSettingsController
+	themeSettings          *themeSettingsController
+	pluginSettings         *pluginSettingsController
+	nativeSettingsPluginID string
+	usageSettings          *usageSettingsController
+	updateSettings         *updateSettingsController
+	privacySettings        *privacySettingsController
+	aboutSettings          *aboutSettingsController
+	hotkeySettings         *hotkeySettingsController
+	settingsSearch         *settingsSearchController
+	sharedEdit             *sharedEditState
+	palette                uiPalette
+	densityMetrics         launcherDensityMetrics
+	translations           map[string]string
+	translationsRevision   atomic.Uint64
 	// imageMu protects the image cache because image decoding completes on background goroutines.
 	imageMu sync.RWMutex
 	// appIcon is decoded during app construction so native title bars never start without their icon.
@@ -317,6 +330,7 @@ func newApp(isDev bool, services contract.Services, windows *woxui.WindowManager
 		windowID:               windowID,
 		services:               services,
 		uiCall:                 woxui.Call,
+		uiPost:                 woxui.Post,
 		windows:                windows,
 		instances:              instances,
 		primary:                primary,
@@ -354,6 +368,22 @@ func newApp(isDev bool, services contract.Services, windows *woxui.WindowManager
 	app.terminalDesired.Store("")
 	app.unsubscribersMu.Lock()
 	app.unsubscribers = append(app.unsubscribers, app.windows.SubscribeMessages(app.windowID, settingsChangedTopic, app.onSharedSettingsChanged))
+	app.unsubscribers = append(app.unsubscribers, network.Subscribe(func(enabled bool) {
+		_ = app.runOnUI("apply offline mode", func() {
+			if enabled {
+				app.resetWebView()
+			} else {
+				app.imageMu.Lock()
+				for key := range app.imageErrors {
+					delete(app.imageRequested, key)
+				}
+				clear(app.imageErrors)
+				app.imageMu.Unlock()
+			}
+			_ = app.window.Invalidate()
+			app.invalidateSettingsWindow()
+		})
+	}))
 	app.unsubscribersMu.Unlock()
 	deps := CommonDeps{
 		Invalidate: app.invalidateSettingsWindow,
@@ -422,7 +452,8 @@ func (a *App) start() error {
 	host := woxwidget.NewHost(a.buildLauncher)
 	launcher, _, err := a.windows.Open(a.windowID, woxui.WindowOptions{
 		Title: "Wox",
-		Size:  woxui.Size{Width: float32(a.show.WindowWidth), Height: a.densityMetrics.queryBoxHeight + a.palette.appPadding.Top + a.palette.appPadding.Bottom},
+		// The idle launcher has no results yet, so this first size omits the about-menu-only toolbar.
+		Size: woxui.Size{Width: float32(a.show.WindowWidth), Height: a.densityMetrics.queryBoxHeight + a.palette.appPadding.Top + a.palette.appPadding.Bottom},
 		// Windows uses HWND_TOPMOST so the query window stays above other apps.
 		// macOS floating level and Linux layer-shell TOP already do that without
 		// occupying the overlay band, so timer/tooltip HUDs can sit above Wox.
@@ -443,10 +474,11 @@ func (a *App) start() error {
 			if event.Down && !event.Composing && !a.hotkeyRecordingUsesSettingsWindow() && !a.hotkeyRecordingUsesOnboardingWindow() && a.onHotkeyRecordingKey(event) {
 				return true
 			}
-			if host.Key(event) {
-				return true
+			settingsPluginID := ""
+			if a.webViewPreviewData != "" {
+				settingsPluginID = firstNonEmpty(a.queryContext.PluginID, common.WebViewPluginID)
 			}
-			return a.onKey(event)
+			return a.dispatchWindowKey(event, host, settingsPluginID, a.requestLauncherShortcutClose, a.onKey)
 		},
 		OnTextInput: func(event woxui.TextInputEvent) {
 			if !host.TextInput(event) {
@@ -547,6 +579,7 @@ func (a *App) showWindow(params showAppParams) error {
 	var launcher *woxui.ManagedWindow
 	queryEmpty := false
 	preserveQuery := false
+	refreshInlinePreview := false
 	wasVisible := false
 	if err := a.runOnUI("prepare launcher show", func() {
 		if params.WindowWidth <= 0 {
@@ -572,6 +605,7 @@ func (a *App) showWindow(params showAppParams) error {
 			a.beginQueryTransitionLocked(false)
 		}
 		preserveQuery = a.applyLaunchModeOnShowLocked()
+		refreshInlinePreview = !wasVisible && a.hasInlinePreviewToRestore()
 		a.canRecallHistory = a.query.QueryType == "input"
 		if params.LaunchMode == "continue" {
 			// The newest history is the current continued query, so the first Up recalls the entry before it.
@@ -619,6 +653,12 @@ func (a *App) showWindow(params showAppParams) error {
 	}
 	if err := a.notifyShown(); err != nil {
 		return err
+	}
+	if refreshInlinePreview {
+		util.GetLogger().Info(a.lifecycleCtx, "refresh inline WebView state after launcher restore")
+		if err := a.RefreshQuery(a.lifecycleCtx, common.RefreshQueryOptions{PreserveSelectedIndex: true}); err != nil {
+			return err
+		}
 	}
 	if queryEmpty && params.StartPage == "mru" && !preserveQuery {
 		if err := a.requestMRU(); err != nil {
@@ -897,6 +937,7 @@ func (a *App) notifySettingViewChanged(inSettingView bool) error {
 // a QueryID without clearing them keeps reporting that older state for the new query.
 // Callers that replace the whole query, such as setQuery, own this bookkeeping already.
 func (a *App) beginQueryGenerationLocked() {
+	a.releaseRefreshResultHoldLocked()
 	if a.queryContextKnown {
 		a.attentionQueryWasGlobal = a.queryContext.IsGlobalQuery
 	}
@@ -948,6 +989,7 @@ func (a *App) replaceQuery(query plainQuery, rememberPrevious bool) {
 		a.query.QueryText = a.updateQueryHintText(query.QueryText)
 	}
 	a.resetQueryTransitionLocked()
+	a.releaseRefreshResultHoldLocked()
 	a.resetQueryLoadingLocked()
 	a.results = nil
 	a.resultsSectionRevision++
@@ -1082,6 +1124,10 @@ func (a *App) applyResults(queryID string, results []queryResult, layout *queryL
 	if a.destroyed.Load() || queryID == "" || queryID != a.query.QueryID {
 		return
 	}
+	if a.holdRefreshResultsLocked(queryID, results, layout, refinements, context, queryStartTimestamp, complete) {
+		return
+	}
+	a.releaseRefreshResultHoldLocked()
 	if a.isDev && a.generalSettings.Data().ShowPerformanceTail && a.generalSettings.Data().ShowPerformanceTailUIReceived && queryStartTimestamp > 0 {
 		appendUIReceivedTails(results, max(int64(0), time.Now().UnixMilli()-queryStartTimestamp))
 	}
@@ -1168,6 +1214,33 @@ func launcherResultAreaHeight(results []queryResult, layout queryLayout, width f
 		contentHeight = int(listResultsContentHeight(results[:visibleRows], 0, 0, float32(resultRowHeight), groupHeaderHeight, float32(resultRowGap)))
 	}
 	return resultPaddingTop + resultPaddingBottom + contentHeight
+}
+
+// resultAreaHeightLocked resolves the same logical geometry for refresh snapshots and window sizing.
+func (a *App) resultAreaHeightLocked(results []queryResult, layout queryLayout) int {
+	width := a.show.WindowWidth
+	if width <= 0 {
+		width = defaultWidth
+	}
+	if a.webViewFullscreen && a.webViewPreviewWidth > 0 {
+		width = a.webViewPreviewWidth
+	}
+	contentWidth := max(float32(0), float32(width)-2*a.palette.AppContentInset)
+	if a.palette.Surfaces != nil {
+		extra := a.palette.Surfaces.ContentInsets
+		contentWidth = max(0, contentWidth-extra.Left-extra.Right)
+	}
+	maxResults := a.show.MaxResultCount
+	if maxResults <= 0 {
+		maxResults = defaultMaxResult
+	}
+	paddingTop, paddingBottom := int(a.palette.resultContainerPadding.Top), int(a.palette.resultContainerPadding.Bottom)
+	if layout.GridLayout == nil && len(results) > 0 {
+		padding := launcherListPadding(a.palette, a.show)
+		paddingTop, paddingBottom = int(padding.Top), int(padding.Bottom)
+	}
+	density := a.densityMetrics.normalized()
+	return launcherResultAreaHeight(results, layout, contentWidth, maxResults, int(density.resultRowHeight(a.palette)), paddingTop, paddingBottom, density.groupHeaderHeight())
 }
 
 func (a *App) applyWindowBounds() error {
@@ -1272,12 +1345,7 @@ func (a *App) applyWindowBoundsOnUI(useShowPosition bool) error {
 		height += int(densityMetrics.refinementBarHeight)
 	}
 	if visibleResults > 0 {
-		contentWidth := max(float32(0), float32(width)-2*palette.AppContentInset)
-		if palette.Surfaces != nil {
-			extra := palette.Surfaces.ContentInsets
-			contentWidth = max(0, contentWidth-extra.Left-extra.Right)
-		}
-		height += launcherResultAreaHeight(results, layout, contentWidth, maxResults, resultRowHeight, resultPaddingTop, resultPaddingBottom, densityMetrics.groupHeaderHeight())
+		height += a.resultAreaHeightLocked(results, layout)
 	}
 	if toolbarHeightIncluded {
 		height += int(densityMetrics.toolbarHeight)
@@ -1443,11 +1511,11 @@ func launcherReservesFullPreviewHeight(params showAppParams, previewVisible bool
 	return previewVisible || params.ShowPreviewTitleBar && params.HideQueryBox && params.HideToolbar
 }
 
-// launcherToolbarHasContent reports whether the footer row earns its height. An empty
-// launcher keeps only the query box, so the row appears once there are results, a plugin
-// toolbar message, or a panel anchored to its edge.
-func launcherToolbarHasContent(resultCount int, messageVisible, panelOpen bool) bool {
-	return resultCount > 0 || messageVisible || panelOpen
+// launcherToolbarHasContent keeps the footer for result actions, status, or an open about menu.
+// A query with no results would only show the about-menu button, so that strip stays hidden
+// until the window grows with the results.
+func launcherToolbarHasContent(resultCount int, messageVisible, overlayOpen bool) bool {
+	return resultCount > 0 || messageVisible || overlayOpen
 }
 
 // launcherToolbarHeightIncluded keeps the toolbar out of fullscreen preview layouts.
@@ -2531,6 +2599,8 @@ type formOption struct {
 	Label string   `json:"Label"`
 	Value string   `json:"Value"`
 	Icon  woxImage `json:"Icon"`
+	// IsSelectAll stores only this option and clears every other selection.
+	IsSelectAll bool `json:"IsSelectAll,omitempty"`
 	// Group is a translated or i18n section label shown above this option.
 	Group            string `json:"Group,omitempty"`
 	GroupTooltip     string `json:"GroupTooltip,omitempty"`

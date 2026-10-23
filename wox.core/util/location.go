@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,7 +24,17 @@ type Location struct {
 	userDataDirectory string
 
 	userDataDirectoryShortcutPath string // A file named .wox.location that contains the user data directory path
+
+	// portableUserData is true when this launch reads user data from a wox-user directory beside the executable.
+	portableUserData bool
 }
+
+// portableUserDataDirectoryName is the directory that opts a copy of Wox into portable user data.
+// It has to already exist beside the executable. Creating it automatically would make every launch portable.
+const portableUserDataDirectoryName = "wox-user"
+
+// currentExecutablePath is replaced by tests that need a fake binary location.
+var currentExecutablePath = os.Executable
 
 func GetLocation() *Location {
 	locationOnce.Do(func() {
@@ -50,9 +61,15 @@ func (l *Location) Init() error {
 	}
 
 	l.userDataDirectoryShortcutPath = path.Join(l.woxDataDirectory, ".userdata.location")
+	l.portableUserData = false
 	userDataDirectoryOverride := GetTestUserDataDirectoryOverride()
 	if userDataDirectoryOverride != "" {
 		l.userDataDirectory = userDataDirectoryOverride
+	} else if portableDir, ok := portableUserDataDirectory(); ok {
+		// Leave .userdata.location untouched. Writing the portable path there would retarget
+		// a normal install that shares this machine data directory.
+		l.userDataDirectory = portableDir
+		l.portableUserData = true
 	} else {
 		if _, statErr := os.Stat(l.userDataDirectoryShortcutPath); os.IsNotExist(statErr) {
 			// shortcut file does not exist, create and write default data directory path to it
@@ -145,6 +162,9 @@ func (l *Location) Init() error {
 	if directoryErr := l.EnsureDirectoryExist(l.GetNotesAttachmentsDirectory()); directoryErr != nil {
 		return directoryErr
 	}
+	if directoryErr := l.EnsureDirectoryExist(l.GetScreenshotDirectory()); directoryErr != nil {
+		return directoryErr
+	}
 
 	return nil
 }
@@ -201,6 +221,11 @@ func (l *Location) GetPluginSettingDirectory() string {
 
 func (l *Location) GetUserDataDirectory() string {
 	return l.userDataDirectory
+}
+
+// IsPortableUserData reports whether this launch is using the wox-user directory beside the executable.
+func (l *Location) IsPortableUserData() bool {
+	return l.portableUserData
 }
 
 func (l *Location) GetWoxSettingPath() string {
@@ -349,12 +374,48 @@ func (l *Location) GetNotesAttachmentsDirectory() string {
 	return path.Join(l.userDataDirectory, "notes", "attachments")
 }
 
+// GetScreenshotDirectory stores captured images with the user's other data, alongside notes and chats.
+func (l *Location) GetScreenshotDirectory() string {
+	return path.Join(l.userDataDirectory, "screenshots")
+}
+
+// GetLegacyScreenshotDirectory returns the pre-user-data screenshot directory for migration only.
+func (l *Location) GetLegacyScreenshotDirectory() string {
+	return path.Join(l.woxDataDirectory, "screenshots")
+}
+
 func (l *Location) GetAppLockPath() string {
 	return path.Join(l.GetWoxDataDirectory(), "wox.lock")
 }
 
 func (l *Location) UpdateUserDataDirectory(newDirectory string) {
 	l.userDataDirectory = newDirectory
+}
+
+// portableUserDataDirectory returns the wox-user directory beside the executable when that directory exists.
+// Hosts, caches, models, and the file index stay in the machine data directory; they are not shared across computers.
+func portableUserDataDirectory() (string, bool) {
+	executable, err := currentExecutablePath()
+	if err != nil || strings.TrimSpace(executable) == "" {
+		return "", false
+	}
+	if resolved, evalErr := filepath.EvalSymlinks(executable); evalErr == nil {
+		executable = resolved
+	}
+	return portableUserDataDirectoryIn(filepath.Dir(executable))
+}
+
+// portableUserDataDirectoryIn reports an existing wox-user directory in executableDir.
+func portableUserDataDirectoryIn(executableDir string) (string, bool) {
+	if strings.TrimSpace(executableDir) == "" {
+		return "", false
+	}
+	candidate := filepath.Join(executableDir, portableUserDataDirectoryName)
+	info, err := os.Stat(candidate)
+	if err != nil || !info.IsDir() {
+		return "", false
+	}
+	return candidate, true
 }
 
 // Get the path to the shortcut file that stores the user data directory path

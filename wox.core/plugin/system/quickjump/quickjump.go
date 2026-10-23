@@ -52,16 +52,17 @@ const (
 	quickJumpPathsSettingKey      = "quickJumpPaths"
 	ignoredApplicationsSettingKey = "ignoredApplications"
 
-	quickJumpPluginID                = "6cde8bec-3f19-44f6-8a8b-d3ba3712d04e"
+	quickJumpPluginID                = common.QuickJumpPluginID
 	quickJumpCommandAdd              = "add"
 	quickJumpDialogHintOverlayName   = "quickjump_dialog_hint"
 	quickJumpDialogHintCloseDelay    = 250 * time.Millisecond
 	quickJumpDialogPathCacheDuration = 30 * time.Second
 
-	// Current-folder hits keep a higher tier than global indexed scores
-	// (typically a few thousand). Type-to-search still searches beyond the
-	// active folder, but files the user is already looking at should rank first.
-	currentDirectoryScoreBoost int64 = 100000
+	// File search scores an ordinary filename hit in [1_000_000, 1_999_999].
+	// A current-folder name that misses that result window is backfilled with
+	// only its raw fuzzy score, so this boost has to clear the whole band.
+	// The file the user is looking at then stays above unrelated global hits.
+	currentDirectoryScoreBoost int64 = 2_000_000
 )
 
 func init() {
@@ -98,7 +99,7 @@ type QuickJumpPlugin struct {
 
 func (c *QuickJumpPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "6cde8bec-3f19-44f6-8a8b-d3ba3712d04e",
+		Id:            common.QuickJumpPluginID,
 		Name:          "i18n:plugin_quickjump_plugin_name",
 		Author:        "Wox Launcher",
 		Version:       "1.0.0",
@@ -462,10 +463,11 @@ func (c *QuickJumpPlugin) buildDirectoryEntryResult(query plugin.Query, title st
 	}
 
 	return plugin.QueryResult{
-		Title:    title,
-		SubTitle: fullPath,
-		Icon:     icon,
-		Score:    score,
+		Title:       title,
+		SubTitle:    fullPath,
+		IdentityKey: fullPath,
+		Icon:        icon,
+		Score:       score,
 		Actions: []plugin.QueryResultAction{
 			{
 				Name: "i18n:plugin_quickjump_open",
@@ -575,10 +577,11 @@ func (c *QuickJumpPlugin) queryJumpFolders(ctx context.Context, query plugin.Que
 
 func (c *QuickJumpPlugin) buildJumpFolderResult(query plugin.Query, title string, folderPath string, score int64) plugin.QueryResult {
 	return plugin.QueryResult{
-		Title:    title,
-		SubTitle: folderPath,
-		Icon:     icons.Get(icons.PluginQuickJump),
-		Score:    score,
+		Title:       title,
+		SubTitle:    folderPath,
+		IdentityKey: folderPath,
+		Icon:        icons.Get(icons.PluginQuickJump),
+		Score:       score,
 		Actions: []plugin.QueryResultAction{
 			{
 				Name:                   "i18n:plugin_quickjump_jump_to",
@@ -1017,12 +1020,12 @@ func mergeCurrentDirectoryResults(indexedResults []plugin.QueryResult, localResu
 			if item.Score > localItem.Score {
 				localItem.Score = item.Score
 			}
-			localItem.Score += currentDirectoryScoreBoost
+			localItem.Score = boostCurrentDirectoryScore(localItem.Score)
 			results = append(results, markCurrentDirectoryResult(localItem))
 			continue
 		}
 
-		item.Score += currentDirectoryScoreBoost
+		item.Score = boostCurrentDirectoryScore(item.Score)
 		results = append(results, markCurrentDirectoryResult(item))
 	}
 
@@ -1031,10 +1034,20 @@ func mergeCurrentDirectoryResults(indexedResults []plugin.QueryResult, localResu
 		if seen[pathKey] {
 			continue
 		}
-		item.Score += currentDirectoryScoreBoost
+		item.Score = boostCurrentDirectoryScore(item.Score)
 		results = append(results, markCurrentDirectoryResult(item))
 	}
 	return results
+}
+
+// boostCurrentDirectoryScore lifts a current-folder hit above every global
+// filename match. A weak or negative fuzzy score must not fall back into the
+// [1_000_000, 1_999_999] filename band.
+func boostCurrentDirectoryScore(score int64) int64 {
+	if score < 0 {
+		score = 0
+	}
+	return score + currentDirectoryScoreBoost
 }
 
 // markCurrentDirectoryResult labels current-folder hits so they stay visually

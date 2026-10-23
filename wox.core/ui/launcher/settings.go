@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"time"
+	"wox/network"
 	woxcomponent "wox/ui/launcher/component"
 
 	"wox/setting"
@@ -55,6 +56,8 @@ type settingsData struct {
 	QueryAliases                       []queryAliasSetting
 	TrayQueries                        json.RawMessage
 	IsLinuxWaylandSession              bool
+	UseSoftwareRendering               bool
+	SoftwareRenderingRestartRequired   bool
 	UsePinYin                          bool
 	SwitchInputMethodABC               bool
 	HideOnStart                        bool
@@ -73,6 +76,7 @@ type settingsData struct {
 	ReleaseChannel                     string
 	EnableAnonymousUsageStats          bool
 	EnablePrivacyMode                  bool
+	EnableOfflineMode                  bool
 	CustomPythonPath                   string
 	CustomNodejsPath                   string
 	CloudSyncServerURL                 string `json:"CloudSyncServerUrl"`
@@ -86,6 +90,7 @@ type settingsData struct {
 	PrimaryGlance                      glanceRef
 	HideGlanceIcon                     bool
 	CloudSyncDisabledPlugins           []string
+	HiddenPluginStores                 []string
 	ShowScoreTail                      bool
 	ShowPerformanceTail                bool
 	ShowPerformanceTailBatch           bool
@@ -135,20 +140,22 @@ type settingItem struct {
 }
 
 type settingsSnapshot struct {
-	isDev       bool
-	tab         string
-	row         int
-	saving      bool
-	highlight   string
-	tooltip     *settingsInlineTooltipSnapshot
-	search      settingsSearchSnapshot
-	update      updateSettingsSnapshot
-	palette     woxcomponent.ControlTheme
-	plugins     pluginSettingsSnapshot
-	hotkey      hotkeySettingsSnapshot
-	appearance  appearanceSettingsSnapshot
-	theme       themeSettingsSnapshot
-	tableEditor *formTableEditorSnapshot
+	isDev        bool
+	tab          string
+	row          int
+	saving       bool
+	restarting   bool
+	restartError string
+	highlight    string
+	tooltip      *settingsInlineTooltipSnapshot
+	search       settingsSearchSnapshot
+	update       updateSettingsSnapshot
+	palette      woxcomponent.ControlTheme
+	plugins      pluginSettingsSnapshot
+	hotkey       hotkeySettingsSnapshot
+	appearance   appearanceSettingsSnapshot
+	theme        themeSettingsSnapshot
+	tableEditor  *formTableEditorSnapshot
 	// modelManager is the local dictation/OCR model overlay shown above every settings page.
 	modelManager *modelManagerSnapshot
 	usage        usageSettingsSnapshot
@@ -513,6 +520,10 @@ func (a *App) reloadSettingsWithForms(forceForms bool) error {
 	var applyErr error
 	densityChanged := false
 	if err := a.runOnUI("apply general settings snapshot", func() {
+		// A reload still returns the shortcut that was registered before import.
+		if a.onboardingOpen {
+			data = overlayStagedMigrationHotkey(data, a.onboardingMigration)
+		}
 		if forceForms || a.settingsOpen || a.onboardingOpen {
 			hotkeyForm := newHotkeySettingsForm(data)
 			generalForm := newGeneralQuerySettingsForm(data)
@@ -601,6 +612,8 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 		QueryAliases:                       queryAliases,
 		TrayQueries:                        trayQueries,
 		IsLinuxWaylandSession:              loaded.IsLinuxWaylandSession,
+		UseSoftwareRendering:               loaded.UseSoftwareRendering,
+		SoftwareRenderingRestartRequired:   loaded.SoftwareRenderingRestartRequired,
 		UsePinYin:                          loaded.UsePinYin,
 		SwitchInputMethodABC:               loaded.SwitchInputMethodABC,
 		HideOnStart:                        loaded.HideOnStart,
@@ -619,6 +632,7 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 		ReleaseChannel:                     string(loaded.ReleaseChannel),
 		EnableAnonymousUsageStats:          loaded.EnableAnonymousUsageStats,
 		EnablePrivacyMode:                  loaded.EnablePrivacyMode,
+		EnableOfflineMode:                  loaded.EnableOfflineMode,
 		CustomPythonPath:                   loaded.CustomPythonPath,
 		CustomNodejsPath:                   loaded.CustomNodejsPath,
 		CloudSyncServerURL:                 loaded.CloudSyncServerURL,
@@ -632,6 +646,7 @@ func settingsDataFromContract(loaded contract.GeneralSettings) (settingsData, er
 		PrimaryGlance:                      glanceRef{PluginID: loaded.PrimaryGlance.PluginId, GlanceID: loaded.PrimaryGlance.GlanceId},
 		HideGlanceIcon:                     loaded.HideGlanceIcon,
 		CloudSyncDisabledPlugins:           append([]string(nil), loaded.CloudSyncDisabledPlugins...),
+		HiddenPluginStores:                 append([]string(nil), loaded.HiddenPluginStores...),
 		ShowScoreTail:                      loaded.ShowScoreTail,
 		ShowPerformanceTail:                loaded.ShowPerformanceTail,
 		ShowPerformanceTailBatch:           loaded.ShowPerformanceTailBatch,
@@ -761,6 +776,8 @@ func (a *App) settingsSnapshot() settingsSnapshot {
 		tab:          a.settingTab,
 		row:          a.settingRow,
 		saving:       a.settingSaving,
+		restarting:   a.settingRestarting,
+		restartError: a.settingRestartError,
 		highlight:    a.settingFlash,
 		tooltip:      tooltip,
 		search:       search,
@@ -1037,6 +1054,9 @@ func (a *App) activateSetting(direction int) {
 		return
 	}
 	item := items[snapshot.row]
+	if network.IsOffline() && (item.key == "EnableAutoUpdate" || item.key == "EnableAnonymousUsageStats") {
+		return
+	}
 	if item.disabled {
 		return
 	}
@@ -1057,11 +1077,8 @@ func (a *App) activateSetting(direction int) {
 	if !ok {
 		return
 	}
-	a.beginSettingSave()
 	a.invalidateSettingsWindow()
-	util.Go(a.lifecycleCtx, "save setting choice", func() {
-		a.saveSetting(item, next)
-	})
+	a.startGeneralSettingSave("save setting choice", item, next)
 }
 
 // startBuiltInSettingEdit gives a core-backed text value shared editor and native IME ownership.
@@ -1110,12 +1127,41 @@ func (a *App) submitBuiltInSettingEdit() {
 	}
 	item := items[index]
 	value := snapshot.general.Editing.Text
-	a.beginSettingSave()
 	a.updateSettingsTextInput(false)
 	a.invalidateSettingsWindow()
-	util.Go(a.lifecycleCtx, "save setting text value", func() {
-		a.saveSetting(item, settingChoice{value: value, label: value})
-	})
+	a.startGeneralSettingSave("save setting text value", item, settingChoice{value: value, label: value})
+}
+
+// blurBuiltInSettingEdit ends a built-in text session when its field loses focus.
+// A press blurs the field on pointer-down and activates the clicked control on pointer-up,
+// so a changed value waits for that click and is written with it when the click saves another setting.
+func (a *App) blurBuiltInSettingEdit(item settingItem) {
+	if !item.text || a.settingSaving || a.generalSettings.EditKey() != item.key {
+		return
+	}
+	value := item.value
+	if editor := a.generalSettings.Editor(); editor != nil {
+		value = editor.State().Text
+	}
+	a.cancelBuiltInSettingEdit()
+	if value == item.value {
+		return
+	}
+	if a.settingsHost != nil && a.settingsHost.DispatchingPointer() {
+		a.pendingBuiltInText = &pendingBuiltInText{key: item.key, value: value}
+		return
+	}
+	a.startGeneralSettingSave("save setting text value", item, settingChoice{value: value, label: value})
+}
+
+// finishSettingsPointer writes a blurred text value when the click that left the field did not save one itself.
+func (a *App) finishSettingsPointer(event woxui.PointerEvent) {
+	if event.Kind != woxui.PointerUp || event.Button != woxui.PointerButtonPrimary || a.settingSaving || a.pendingBuiltInText == nil {
+		return
+	}
+	pending := *a.pendingBuiltInText
+	a.startGeneralSettingSave("save setting text value", settingItem{key: pending.key, text: true}, settingChoice{value: pending.value, label: pending.value})
+	a.invalidateSettingsWindow()
 }
 
 // onBuiltInSettingsEditorKey keeps text editing separate from rail and choice navigation.
@@ -1183,6 +1229,51 @@ func (a *App) beginSettingSave() {
 	a.settingSaving = true
 }
 
+// pendingBuiltInText is one blurred text value waiting to be written with the click that left the field.
+type pendingBuiltInText struct {
+	key   string
+	value string
+}
+
+// startGeneralSettingSave writes one setting and, when a blurred text value is still waiting, writes that first.
+func (a *App) startGeneralSettingSave(job string, item settingItem, choice settingChoice) {
+	leadingKey, leadingValue := "", ""
+	if a.pendingBuiltInText != nil && a.pendingBuiltInText.key != item.key {
+		leadingKey = a.pendingBuiltInText.key
+		leadingValue = a.pendingBuiltInText.value
+	}
+	a.pendingBuiltInText = nil
+	a.beginSettingSave()
+	util.Go(a.lifecycleCtx, job, func() {
+		if leadingKey != "" {
+			if err := a.writeGeneralSetting(leadingKey, leadingValue); err != nil {
+				a.saveSettingFailed(leadingKey, err)
+				return
+			}
+		}
+		a.saveSetting(item, choice)
+	})
+}
+
+// writeGeneralSetting persists one key without reloading the settings snapshot.
+func (a *App) writeGeneralSetting(key, value string) error {
+	if a.services == nil {
+		return fmt.Errorf("settings services are unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	return a.services.UpdateGeneralSetting(ctx, a.sessionID, key, value)
+}
+
+// saveSettingFailed releases the saving flag when a leading write fails before the main save.
+func (a *App) saveSettingFailed(key string, err error) {
+	_ = a.runOnUI("apply general setting save", func() {
+		a.settingSaving = false
+		log.Printf("save setting %s: %v", key, err)
+		a.invalidateSettingsWindow()
+	})
+}
+
 func (a *App) saveSetting(item settingItem, choice settingChoice) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	err := a.services.UpdateGeneralSetting(ctx, a.sessionID, item.key, choice.value)
@@ -1220,6 +1311,13 @@ func (a *App) saveSetting(item settingItem, choice settingChoice) {
 			} else if item.text {
 				a.generalSettings.Editor().SetText(choice.value, false)
 				restoreTextInput = true
+			}
+		}
+		if item.key == "EnableOfflineMode" || item.key == "EnablePrivacyMode" {
+			if err != nil {
+				a.privacySettings.SetError(err.Error())
+			} else {
+				a.privacySettings.SetError("")
 			}
 		}
 		if err != nil {
@@ -1323,7 +1421,9 @@ func settingItemsForSnapshot(snapshot settingsSnapshot) []settingItem {
 		font := systemFontSettingItem(snapshot)
 		insertAt := appearanceFontInsertIndex(items)
 		items = append(items[:insertAt], append([]settingItem{font}, items[insertAt:]...)...)
-		items = append(items, primaryGlanceSettingItem(snapshot))
+		// Keep the compatibility option last, after the dynamic Glance control.
+		insertAt = len(items) - 1
+		items = append(items[:insertAt], append([]settingItem{primaryGlanceSettingItem(snapshot)}, items[insertAt:]...)...)
 	}
 	return items
 }
@@ -1407,6 +1507,7 @@ func settingItems(tab string, data settingsData) []settingItem {
 			{key: "MaxResultCount", title: "Maximum results", description: "Number of result rows visible before scrolling", value: fmt.Sprintf("%d", data.MaxResultCount), choices: resultChoices},
 			{key: "EnableGlance", title: "Glance", description: "Show glance content beside the query", value: boolValue(data.EnableGlance), choices: boolChoices},
 			{key: "HideGlanceIcon", title: "Hide glance icon", description: "Keep the query box visually minimal", value: boolValue(data.HideGlanceIcon), choices: boolChoices},
+			{key: "UseSoftwareRendering", title: "i18n:ui_software_rendering", description: "i18n:ui_software_rendering_tips", value: boolValue(data.UseSoftwareRendering), choices: boolChoices},
 		}
 	case "hotkey":
 		var items []settingItem
@@ -1438,7 +1539,8 @@ func settingItems(tab string, data settingsData) []settingItem {
 		}
 	case "privacy":
 		return []settingItem{
-			{key: "EnablePrivacyMode", title: "Private mode", description: "Clear local data after exit while retaining non-sensitive settings", value: boolValue(data.EnablePrivacyMode), choices: boolChoices},
+			{key: "EnablePrivacyMode", title: "Clear local data on exit", description: "Clear local data after exit while retaining non-sensitive settings", value: boolValue(data.EnablePrivacyMode), choices: boolChoices},
+			{key: "EnableOfflineMode", title: "Offline mode", description: "Pause network features and third-party plugins", value: boolValue(data.EnableOfflineMode), choices: boolChoices},
 			{key: "EnableAnonymousUsageStats", title: "Anonymous usage stats", description: "Help improve Wox with anonymous telemetry", value: boolValue(data.EnableAnonymousUsageStats), choices: boolChoices},
 		}
 	default:
@@ -1453,6 +1555,7 @@ func settingItems(tab string, data settingsData) []settingItem {
 			{key: "HttpProxyEnabled", title: "HTTP proxy", value: boolValue(data.HttpProxyEnabled), choices: boolChoices},
 			{key: "HttpProxyUrl", title: "Proxy URL", value: data.HttpProxyURL, text: true, controlWidth: 300, disabled: !data.HttpProxyEnabled},
 		}
+
 		return items
 	}
 }
@@ -1490,4 +1593,27 @@ func settingValueLabel(item settingItem) string {
 		}
 	}
 	return item.value
+}
+
+// restartFromSettings keeps repeated clicks from launching multiple replacement processes.
+func (a *App) restartFromSettings() {
+	if a.settingRestarting || a.settingSaving {
+		return
+	}
+	a.settingRestarting = true
+	a.settingRestartError = ""
+	a.invalidateSettingsWindow()
+	util.Go(a.lifecycleCtx, "restart Wox from settings", func() {
+		err := a.services.RestartWox(context.Background(), a.sessionID)
+		if err != nil {
+			util.GetLogger().Error(context.Background(), fmt.Sprintf("restart Wox from settings: %v", err))
+		}
+		_ = a.runOnUI("restart Wox result", func() {
+			a.settingRestarting = false
+			if err != nil {
+				a.settingRestartError = fmt.Sprintf(a.translate("i18n:ui_restart_wox_failed"), err.Error())
+			}
+			a.invalidateSettingsWindow()
+		})
+	})
 }

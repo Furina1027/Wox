@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"wox/common"
 	"wox/common/icons"
 	corehotkey "wox/hotkey"
 	"wox/i18n"
@@ -166,7 +167,7 @@ type DictationPlugin struct {
 
 func (p *DictationPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "a3f7b8c2-d1e4-4f6a-9b0c-7e2d1a5f8b3e",
+		Id:            common.DictationPluginID,
 		Name:          "i18n:plugin_dictation_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",

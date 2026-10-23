@@ -2,6 +2,7 @@ package contract
 
 import (
 	"context"
+	"errors"
 
 	"wox/account"
 	"wox/cloudsync"
@@ -94,12 +95,19 @@ type DataBackup struct {
 	Path      string
 }
 
+// ErrBackupInProgress is returned when a backup is requested while one is already running.
+var ErrBackupInProgress = errors.New("backup already in progress")
+
 // DataSettingsServices exposes user-data, backup, and log operations.
 type DataSettingsServices interface {
 	DataLocation(ctx context.Context, sessionID string) (string, error)
 	DataBackups(ctx context.Context, sessionID string) ([]DataBackup, error)
 	CreateDataBackup(ctx context.Context, sessionID string) error
+	// WatchDataBackup invokes onChange with the current run immediately and on each later change.
+	// onChange may run on the backup goroutine. The returned function removes the watcher.
+	WatchDataBackup(ctx context.Context, sessionID string, onChange func(running bool, failure error)) (cancel func())
 	RestoreDataBackup(ctx context.Context, sessionID string, backupID string) error
+	DeleteDataBackup(ctx context.Context, sessionID string, backupID string) error
 	ChangeDataLocation(ctx context.Context, sessionID string, location string) error
 	ClearLogs(ctx context.Context, sessionID string) error
 	OpenPath(ctx context.Context, sessionID string, path string) error
@@ -136,6 +144,8 @@ type GeneralSettings struct {
 	FullscreenDetectionSupported       bool
 	IgnoredHotkeyApps                  []setting.IgnoredHotkeyApp
 	LogLevel                           string
+	UseSoftwareRendering               bool
+	SoftwareRenderingRestartRequired   bool
 	UsePinYin                          bool
 	SwitchInputMethodABC               bool
 	HideOnStart                        bool
@@ -160,10 +170,12 @@ type GeneralSettings struct {
 	ReleaseChannel                     setting.ReleaseChannel
 	EnableAnonymousUsageStats          bool
 	EnablePrivacyMode                  bool
+	EnableOfflineMode                  bool
 	CustomPythonPath                   string
 	CustomNodejsPath                   string
 	CloudSyncServerURL                 string
 	CloudSyncDisabledPlugins           []string
+	HiddenPluginStores                 []string
 	AppWidth                           int
 	MaxResultCount                     int
 	UIDensity                          setting.UiDensity
@@ -183,6 +195,7 @@ type GeneralSettings struct {
 
 // GeneralSettingsServices exposes the shared settings snapshot and language catalog.
 type GeneralSettingsServices interface {
+	RestartWox(ctx context.Context, sessionID string) error
 	GeneralSettings(ctx context.Context, sessionID string) (GeneralSettings, error)
 	AvailableLanguages(ctx context.Context, sessionID string) ([]i18n.Lang, error)
 	// LanguageBundle returns the parsed translation table for langCode. The map is shared
@@ -359,8 +372,10 @@ type PluginCatalogItem struct {
 	IsInstalled        bool
 	IsDisable          bool
 	IsUpgradable       bool
+	Store              string
 	SettingDefinitions definition.PluginSettingDefinitions
 	Setting            PluginSetting
+	HasNativeSettings  bool
 }
 
 // PluginCatalogSettingsServices exposes installed and store plugin collections.
@@ -381,6 +396,7 @@ const (
 // PluginOperationSettingsServices exposes plugin lifecycle and persisted setting changes.
 type PluginOperationSettingsServices interface {
 	OperatePlugin(ctx context.Context, sessionID string, pluginID string, operation PluginOperation) error
+	OpenNativePluginSettings(ctx context.Context, sessionID string, pluginID string) error
 	ExecutePluginSettingAction(ctx context.Context, sessionID string, pluginID string, actionID string) error
 	UpdatePluginSettings(ctx context.Context, sessionID string, pluginID string, values map[string]string) error
 }
@@ -398,6 +414,8 @@ const (
 type ThemeOperationSettingsServices interface {
 	OperateTheme(ctx context.Context, sessionID string, themeID string, operation ThemeOperation) error
 	SaveTheme(ctx context.Context, sessionID string, name string, theme common.Theme, overwrite bool) (common.Theme, error)
+	// InstallMigratedTheme saves a theme mapped from another launcher and selects it.
+	InstallMigratedTheme(ctx context.Context, sessionID string, theme common.Theme) error
 	SaveAutoTheme(ctx context.Context, sessionID string, name string, lightThemeID string, darkThemeID string, themeID string, overwrite bool) (common.Theme, error)
 }
 

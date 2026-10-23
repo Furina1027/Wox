@@ -6,15 +6,26 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"wox/common"
 	"wox/plugin"
 )
 
 func TestConverterCrypto(t *testing.T) {
 	suite := NewTestSuite(t)
-	converter := plugin.GetPluginManager().GetPluginInstanceById("a48dc5f0-dab9-4112-b883-b68129d6782b")
+	converter := plugin.GetPluginManager().GetPluginInstanceById(common.ConverterPluginID)
 	if converter == nil {
 		t.Fatal("converter plugin is not initialized")
 	}
+	// Fix the display currency so these checks do not depend on the OS region.
+	previousCurrency, _ := converter.Setting.Get("defaultCurrency")
+	if err := converter.Setting.SetLocal("defaultCurrency", "USD"); err != nil {
+		t.Fatalf("set default currency: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := converter.Setting.SetLocal("defaultCurrency", previousCurrency); err != nil {
+			t.Errorf("restore default currency: %v", err)
+		}
+	})
 	if err := converter.Setting.DeleteLocal("cryptoPriceSyncConsent"); err != nil {
 		t.Fatalf("failed to clear crypto price sync consent: %v", err)
 	}
@@ -110,10 +121,13 @@ func TestConverterCrypto(t *testing.T) {
 			},
 		},
 		{
-			Name:           "BTC plus number",
+			Name:           "BTC plus number uses default currency",
 			Query:          "1btc + 1",
-			ExpectedTitle:  "2 BTC",
+			ExpectedTitle:  "$",
 			ExpectedAction: "Copy",
+			TitleCheck: func(title string) bool {
+				return len(title) > 1 && strings.HasPrefix(title, "$") && title[1] >= '0' && title[1] <= '9'
+			},
 		},
 	}
 

@@ -43,8 +43,10 @@ type pluginSettingsPlugin struct {
 	IsInstalled        bool               `json:"IsInstalled"`
 	IsDisable          bool               `json:"IsDisable"`
 	IsUpgradable       bool               `json:"IsUpgradable"`
+	Store              string             `json:"Store"`
 	SettingDefinitions []formDefinition   `json:"SettingDefinitions"`
 	Setting            pluginSettingsData `json:"Setting"`
+	HasNativeSettings  bool               `json:"HasNativeSettings"`
 }
 
 type pluginCommand struct {
@@ -82,11 +84,9 @@ const (
 	pluginFilterInstalled   = "installed"
 	pluginFilterUninstalled = "uninstalled"
 
-	pluginFilterRuntimeNodeJS       = "nodejs"
-	pluginFilterRuntimePython       = "python"
-	pluginFilterRuntimeScript       = "script"
-	pluginFilterRuntimeScriptNodeJS = "script-nodejs"
-	pluginFilterRuntimeScriptPython = "script-python"
+	pluginFilterRuntimeNodeJS = "nodejs"
+	pluginFilterRuntimePython = "python"
+	pluginFilterRuntimeScript = "script"
 )
 
 // pluginFilterState stores exclusive catalog dropdowns. Empty or "all" means no restriction.
@@ -153,6 +153,69 @@ func groupInstalledPlugins(filtered []filteredPlugin) []installedPluginSection {
 	if len(disabled) > 0 {
 		sortInstalledPluginsByName(disabled)
 		sections = append(sections, installedPluginSection{ID: pluginSectionDisabled, Plugins: disabled})
+	}
+	return sections
+}
+
+// pluginStoreSectionID maps a missing catalog id onto the official store.
+func pluginStoreSectionID(store string) string {
+	store = strings.ToLower(strings.TrimSpace(store))
+	if store == "" {
+		return plugin.OfficialPluginStoreID
+	}
+	return store
+}
+
+// pluginStoreSectionLess keeps the official store above every other catalog.
+func pluginStoreSectionLess(left, right string) bool {
+	if left == plugin.OfficialPluginStoreID {
+		return right != plugin.OfficialPluginStoreID
+	}
+	if right == plugin.OfficialPluginStoreID {
+		return false
+	}
+	return left < right
+}
+
+// pluginCatalogLess orders installed plugins with system entries first, and store plugins by catalog then name.
+func pluginCatalogLess(left, right pluginSettingsPlugin, store bool) bool {
+	if store {
+		leftStore := pluginStoreSectionID(left.Store)
+		rightStore := pluginStoreSectionID(right.Store)
+		if leftStore != rightStore {
+			return pluginStoreSectionLess(leftStore, rightStore)
+		}
+	} else if left.IsSystem != right.IsSystem {
+		return left.IsSystem
+	}
+	return strings.ToLower(left.Name) < strings.ToLower(right.Name)
+}
+
+type storePluginSection struct {
+	ID      string
+	Plugins []filteredPlugin
+}
+
+// groupStorePlugins splits the visible store catalog by publishing store.
+// The official store stays first. Empty groups are omitted.
+func groupStorePlugins(filtered []filteredPlugin) []storePluginSection {
+	order := make([]string, 0)
+	grouped := map[string][]filteredPlugin{}
+	for _, entry := range filtered {
+		id := pluginStoreSectionID(entry.plugin.Store)
+		if _, found := grouped[id]; !found {
+			order = append(order, id)
+		}
+		grouped[id] = append(grouped[id], entry)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return pluginStoreSectionLess(order[i], order[j])
+	})
+	sections := make([]storePluginSection, 0, len(order))
+	for _, id := range order {
+		plugins := grouped[id]
+		sortInstalledPluginsByName(plugins)
+		sections = append(sections, storePluginSection{ID: id, Plugins: plugins})
 	}
 	return sections
 }
@@ -228,11 +291,11 @@ func pluginMatchesFilters(plugin pluginSettingsPlugin, filters pluginFilterState
 			return false
 		}
 	}
-	return pluginMatchesRuntimeFilter(plugin, filters.runtime, store)
+	return pluginMatchesRuntimeFilter(plugin, filters.runtime)
 }
 
-// pluginMatchesRuntimeFilter keeps store script and installed script-language filters exclusive.
-func pluginMatchesRuntimeFilter(plugin pluginSettingsPlugin, runtime string, store bool) bool {
+// pluginMatchesRuntimeFilter treats every Wox script plugin as one runtime, in both catalogs.
+func pluginMatchesRuntimeFilter(plugin pluginSettingsPlugin, runtime string) bool {
 	if pluginFilterIsAll(runtime) {
 		return true
 	}
@@ -242,13 +305,45 @@ func pluginMatchesRuntimeFilter(plugin pluginSettingsPlugin, runtime string, sto
 	case pluginFilterRuntimePython:
 		return strings.EqualFold(plugin.Runtime, "python")
 	case pluginFilterRuntimeScript:
-		return store && strings.EqualFold(plugin.Runtime, "script")
-	case pluginFilterRuntimeScriptNodeJS:
-		return !store && strings.EqualFold(plugin.Runtime, "script") && strings.HasSuffix(strings.ToLower(plugin.Entry), ".js")
-	case pluginFilterRuntimeScriptPython:
-		return !store && strings.EqualFold(plugin.Runtime, "script") && strings.HasSuffix(strings.ToLower(plugin.Entry), ".py")
+		return strings.EqualFold(plugin.Runtime, "script")
 	default:
+		return strings.EqualFold(plugin.Runtime, runtime)
+	}
+}
+
+// thirdPartyRuntimeFilterValues lists host runtimes that are not the built-in Node.js, Python, script, or Go hosts.
+// Compatibility hosts stay out of this list. Imported plugins still appear in the installed catalog.
+func thirdPartyRuntimeFilterValues() []string {
+	seen := map[string]struct{}{}
+	values := make([]string, 0)
+	for _, host := range plugin.AllHosts {
+		if host == nil || !plugin.RuntimeSettingsVisible(host) {
+			continue
+		}
+		runtime := strings.TrimSpace(string(host.GetRuntime(context.Background())))
+		key := strings.ToLower(runtime)
+		if key == "" || isBuiltinRuntimeFilter(key) {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		values = append(values, runtime)
+	}
+	sort.Slice(values, func(i, j int) bool {
+		return strings.ToLower(values[i]) < strings.ToLower(values[j])
+	})
+	return values
+}
+
+// isBuiltinRuntimeFilter reports runtimes that already have their own filter rows.
+func isBuiltinRuntimeFilter(runtime string) bool {
+	switch strings.ToLower(strings.TrimSpace(runtime)) {
+	case pluginFilterRuntimeNodeJS, pluginFilterRuntimePython, pluginFilterRuntimeScript, "go":
 		return true
+	default:
+		return false
 	}
 }
 
@@ -270,7 +365,7 @@ type pluginSettingsFormState struct {
 	formFieldsState
 	pluginID    string
 	initial     map[string]string
-	saving      bool
+	saving      bool // Only editable setting values participate in this save transaction.
 	status      string
 	statusError bool
 	fieldErrors map[string]string
@@ -546,6 +641,7 @@ func (a *App) setPluginSelectionLocked(index int) {
 	plugin := plugins[index]
 	if form := a.pluginSettings.Form(); form != nil && form.pluginID == plugin.ID {
 		syncFormFieldsEditorLocked(&form.formFieldsState)
+		refreshFormDisplayDefinitions(&form.formFieldsState, pluginSettingsFormDefinitions(plugin))
 		if editor := a.settingsTableEditor; editor != nil && editor.target == &form.formFieldsState {
 			// A post-save definition refresh rebuilds this form. The settings overlay
 			// is published only while settingsTableEditor.target matches the live form
@@ -556,7 +652,6 @@ func (a *App) setPluginSelectionLocked(index int) {
 		// Refresh can arrive while a save is still in flight, before initial moves
 		// forward. An edit that matches the previous initial then looks clean, and
 		// replacing the form would drop it. A dirty form is kept for the same reason.
-		// ponytail: defer dynamic definitions until save or reopen; merge them in place if live updates are needed.
 		if form.saving || pluginFormDirty(form.definitions, form.values, form.initial) {
 			a.pluginSettings.SetSelected(index)
 			return
@@ -873,17 +968,21 @@ func (a *App) resetPluginFilters() {
 	a.applyPluginFilters(pluginFilterState{})
 }
 
-// applyPluginFilters commits catalog filters and keeps the current plugin selected when it still matches.
-func (a *App) applyPluginFilters(filters pluginFilterState) {
-	a.pluginSettings.SetFilters(filters)
+// filteredPluginCatalog applies search and dropdowns to the visible catalog.
+func (a *App) filteredPluginCatalog() []filteredPlugin {
 	query := ""
 	if editor := a.pluginSettings.SearchEditor(); editor != nil {
 		query = editor.State().Text
 	}
-	plugins := a.pluginSettings.Plugins()
 	store := a.pluginSettings.PluginsStore()
+	return filterPlugins(a.pluginSettings.Plugins(), query, a.pluginSettings.Filters(), store, a.usePinYin())
+}
+
+// applyPluginFilters commits catalog filters and keeps the current plugin selected when it still matches.
+func (a *App) applyPluginFilters(filters pluginFilterState) {
+	a.pluginSettings.SetFilters(filters)
 	selected := a.pluginSettings.Selected()
-	filtered := filterPlugins(plugins, query, filters, store, a.usePinYin())
+	filtered := a.filteredPluginCatalog()
 	selectedVisible := false
 	for _, entry := range filtered {
 		if entry.index == selected {
@@ -907,15 +1006,8 @@ func (a *App) blurPluginSearch() {
 }
 
 func (a *App) moveFilteredPluginSelection(delta int) {
-	query := ""
-	if editor := a.pluginSettings.SearchEditor(); editor != nil {
-		query = editor.State().Text
-	}
-	plugins := append([]pluginSettingsPlugin(nil), a.pluginSettings.Plugins()...)
 	selected := a.pluginSettings.Selected()
-	filters := a.pluginSettings.Filters()
-	store := a.pluginSettings.PluginsStore()
-	filtered := filterPlugins(plugins, query, filters, store, a.usePinYin())
+	filtered := a.filteredPluginCatalog()
 	if len(filtered) == 0 {
 		return
 	}
@@ -1139,16 +1231,50 @@ func (a *App) runFocusedPluginServiceAction(index int) {
 	}
 }
 
+// openNativePluginSettings shows the plugin host's own settings window.
+// The button stays disabled until that window closes and the plugin reloads.
+func (a *App) openNativePluginSettings(pluginID string) {
+	pluginID = strings.TrimSpace(pluginID)
+	if pluginID == "" || a.services == nil || a.nativeSettingsPluginID != "" {
+		return
+	}
+	a.nativeSettingsPluginID = pluginID
+	a.invalidateSettingsWindow()
+	util.Go(a.lifecycleCtx, "open native plugin settings", func() {
+		err := a.services.OpenNativePluginSettings(context.Background(), a.sessionID, pluginID)
+		if err != nil {
+			util.GetLogger().Error(a.lifecycleCtx, fmt.Sprintf("open native plugin settings: %v", err))
+		}
+		var reloadErr error
+		if err == nil {
+			reloadErr = a.reloadPlugins(false, pluginID)
+		}
+		_ = a.runOnUI("finish native plugin settings", func() {
+			if a.nativeSettingsPluginID == pluginID {
+				a.nativeSettingsPluginID = ""
+			}
+			if current := a.pluginSettings.Form(); current != nil && current.pluginID == pluginID {
+				if err != nil {
+					current.status = err.Error()
+					current.statusError = true
+				} else if reloadErr != nil {
+					current.status = reloadErr.Error()
+					current.statusError = true
+				}
+			}
+			a.invalidateSettingsWindow()
+		})
+	})
+}
+
 // runPluginServiceAction executes one service lifecycle operation and reloads its dynamic state.
 func (a *App) runPluginServiceAction(actionID string) {
 	form := a.pluginSettings.Form()
-	if form == nil || form.saving || actionID == "" {
+	if form == nil || a.pluginSettings.settingAction.actionID != "" || actionID == "" {
 		return
 	}
 	pluginID := form.pluginID
-	form.saving = true
-	form.status = ""
-	form.statusError = false
+	a.pluginSettings.settingAction = pluginSettingActionState{pluginID: pluginID, actionID: actionID}
 	a.invalidateSettingsWindow()
 	util.Go(a.lifecycleCtx, "run plugin service action", func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -1158,12 +1284,9 @@ func (a *App) runPluginServiceAction(actionID string) {
 			err = a.reloadPlugins(false, pluginID)
 		}
 		_ = a.runOnUI("finish plugin service action", func() {
-			if current := a.pluginSettings.Form(); current != nil && current.pluginID == pluginID {
-				current.saving = false
-				if err != nil {
-					current.status = err.Error()
-					current.statusError = true
-				}
+			a.pluginSettings.settingAction.actionID = ""
+			if err != nil {
+				a.pluginSettings.settingAction.errorText = err.Error()
 			}
 			a.invalidateSettingsWindow()
 		})
@@ -1313,6 +1436,11 @@ func (a *App) changePluginFormChoice(index, delta int) {
 	if state == nil || !state.active {
 		return
 	}
+	if index >= 0 && index < len(state.definitions) && state.definitions[index].Type == "select" && state.definitions[index].Value.IsMulti {
+		// Left/right must not replace the selected set with a single option.
+		a.openFocusedPluginFormChoice(index)
+		return
+	}
 	changeFormFieldsChoiceLocked(&state.formFieldsState, index, delta)
 	state.status = ""
 	clearPluginFormFieldError(state, index)
@@ -1358,9 +1486,11 @@ func (a *App) openPluginFormChoice(index int, anchor woxui.Rect) {
 	item := settingItem{
 		key: "plugin:" + state.pluginID + ":" + definition.Value.Key, title: a.translate(definition.Value.Label),
 		value: state.values[definition.Value.Key], choices: choices,
+		filterable: definition.Value.Filterable,
 	}
 	a.generalSettings.SetChoicePicker(&settingChoicePickerState{
 		item: item, anchor: anchor,
+		multi:    definition.Value.IsMulti,
 		onChoose: func(choice settingChoice) { a.setPluginFormChoice(index, choice.value) },
 	})
 	state.status = ""
@@ -1553,8 +1683,11 @@ func (a *App) submitPluginSettings() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		saveErr := a.services.UpdatePluginSettings(ctx, a.sessionID, pluginID, persistedValues)
+		var saveRevision uint64
 		_ = a.runOnUI("apply plugin settings save", func() {
-			if a.reconcilePluginSettingSave(submitted, pluginID, submittedValues, persistedValues, saveErr) {
+			resubmit := a.reconcilePluginSettingSave(submitted, pluginID, submittedValues, persistedValues, saveErr)
+			saveRevision = a.pluginSettings.settingSaveRevisions[pluginID]
+			if resubmit {
 				a.submitPluginSettings()
 			}
 			a.invalidateSettingsWindow()
@@ -1564,7 +1697,7 @@ func (a *App) submitPluginSettings() {
 			return
 		}
 		// Dynamic settings may depend on any saved value, so always resolve them again.
-		a.refreshPluginFormDefinitions(pluginID)
+		a.refreshPluginFormDefinitions(pluginID, saveRevision)
 	})
 }
 
@@ -1596,6 +1729,7 @@ func (a *App) reconcilePluginSettingSave(submitted *pluginSettingsFormState, plu
 	if saveErr != nil {
 		return false
 	}
+	a.pluginSettings.settingSaveRevisions[pluginID]++
 	a.applySavedPluginSettingValues(pluginID, persistedValues)
 	if sameForm {
 		return pluginFormDirty(form.definitions, form.values, form.initial)
@@ -1613,13 +1747,18 @@ func (a *App) reconcilePluginSettingSave(submitted *pluginSettingsFormState, plu
 }
 
 // refreshPluginFormDefinitions reloads one installed plugin's setting definitions without flashing the catalog.
-func (a *App) refreshPluginFormDefinitions(pluginID string) {
+func (a *App) refreshPluginFormDefinitions(pluginID string, saveRevision uint64) {
 	plugins, err := loadPluginSettingsPlugins(a.lifecycleCtx, a.services, a.sessionID, false)
 	if err != nil {
 		log.Printf("refresh plugin form definitions: %v", err)
 		return
 	}
 	_ = a.runOnUI("refresh plugin form definitions", func() {
+		// Catalog reads include setting values as well as dynamic definitions. A
+		// slower earlier read must not overwrite values committed by a later save.
+		if saveRevision != a.pluginSettings.settingSaveRevisions[pluginID] {
+			return
+		}
 		current := a.pluginSettings.Plugins()
 		for index := range current {
 			if current[index].ID != pluginID {

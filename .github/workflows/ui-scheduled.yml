@@ -37,6 +37,8 @@ jobs:
           cache: false
       - name: Test UI contracts
         run: make test-go-ui-unit
+      - name: Test Linux native dispatch
+        run: python3 wox.core/ui/runtime/internal/window/testdata/test_linux_startup.py
 
   native-smoke:
     name: Native launcher smoke (${{ matrix.name }})
@@ -85,7 +87,7 @@ jobs:
           go-version-file: wox.core/go.mod
           cache: false
       # Host binaries are gitignored and embedded into the smoke build, so CI
-      # must produce python-host.pyz and node-host.js before make smoke.
+      # must produce python-host.pyz and node-host.cjs before make smoke.
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:

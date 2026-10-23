@@ -57,7 +57,7 @@ func TestPrepareFSEventsRefreshUsesEarliestFreshCursorAndReconcilesExpiredRoots(
 	if len(prepared.signals) != 1 {
 		t.Fatalf("expected one recovery signal for expired cursor, got %d", len(prepared.signals))
 	}
-	if prepared.signals[0].Kind != ChangeSignalKindRequiresRootReconcile || prepared.signals[0].RootID != "root-expired" {
+	if prepared.signals[0].Kind != ChangeSignalKindHistoryLost || prepared.signals[0].RootID != "root-expired" {
 		t.Fatalf("unexpected recovery signal: %#v", prepared.signals[0])
 	}
 }
@@ -85,7 +85,7 @@ func TestTranslateFSEventEmitsDirectoryDirtyPathAndCursor(t *testing.T) {
 	}
 }
 
-func TestTranslateFSEventEscalatesDroppedHistoryToRequiresRootReconcile(t *testing.T) {
+func TestTranslateFSEventReconcilesDroppedWatchRoot(t *testing.T) {
 	root := RootRecord{
 		ID:       "root-dropped",
 		Path:     "/tmp/root-dropped",
@@ -96,12 +96,54 @@ func TestTranslateFSEventEscalatesDroppedHistoryToRequiresRootReconcile(t *testi
 	if len(signals) != 1 {
 		t.Fatalf("expected one signal, got %d", len(signals))
 	}
-	if signals[0].Kind != ChangeSignalKindRequiresRootReconcile {
-		t.Fatalf("expected requires root reconcile signal, got %q", signals[0].Kind)
+	if signals[0].Kind != ChangeSignalKindHistoryLost || signals[0].Path != root.Path {
+		t.Fatalf("expected watch-root history recovery, got %#v", signals[0])
 	}
 }
 
-func TestFSEventsChangeFeedKeepsUnmatchedReconcileFallback(t *testing.T) {
+func TestTranslateFSEventRescansDroppedDirectoryOnly(t *testing.T) {
+	root := RootRecord{
+		ID:       "root-dropped",
+		Path:     "/tmp/root-dropped",
+		FeedType: RootFeedTypeFSEvents,
+	}
+
+	signals := translateFSEvent(root, "/tmp/root-dropped/project", fseventFlagMustScanSubDirs|fseventFlagUserDropped, 55, time.Unix(100, 0))
+	if len(signals) != 1 {
+		t.Fatalf("expected one signal, got %d", len(signals))
+	}
+	if signals[0].Kind != ChangeSignalKindDirtyPath || signals[0].Path != "/tmp/root-dropped/project" || !signals[0].PathIsDir {
+		t.Fatalf("expected scoped directory rescan, got %#v", signals[0])
+	}
+}
+
+func TestTranslateFSEventIgnoresPlainWatchRootEvent(t *testing.T) {
+	root := RootRecord{
+		ID:       "root-plain",
+		Path:     "/tmp/root-plain",
+		FeedType: RootFeedTypeFSEvents,
+	}
+
+	signals := translateFSEvent(root, root.Path, fseventFlagItemIsDir|fseventFlagItemModified, 9, time.Unix(100, 0))
+	if len(signals) != 0 {
+		t.Fatalf("expected plain watch-root event to stay out of the dirty queue, got %#v", signals)
+	}
+}
+
+func TestTranslateFSEventRootChangedStillReconcilesRoot(t *testing.T) {
+	root := RootRecord{
+		ID:       "root-changed",
+		Path:     "/tmp/root-changed",
+		FeedType: RootFeedTypeFSEvents,
+	}
+
+	signals := translateFSEvent(root, root.Path, fseventFlagRootChanged, 9, time.Unix(100, 0))
+	if len(signals) != 1 || signals[0].Kind != ChangeSignalKindHistoryLost {
+		t.Fatalf("expected root reconcile after an unusable root history, got %#v", signals)
+	}
+}
+
+func TestFSEventsChangeFeedIgnoresUnmatchedMustScan(t *testing.T) {
 	roots := []RootRecord{
 		{ID: "root-one", Path: filepath.Join(t.TempDir(), "one"), FeedType: RootFeedTypeFSEvents},
 		{ID: "root-two", Path: filepath.Join(t.TempDir(), "two"), FeedType: RootFeedTypeFSEvents},
@@ -119,18 +161,10 @@ func TestFSEventsChangeFeedKeepsUnmatchedReconcileFallback(t *testing.T) {
 		[]uint64{123},
 	)
 
-	seen := map[string]bool{}
-	for range roots {
-		signal := mustReadChangeSignal(t, feed.Signals())
-		if signal.Kind != ChangeSignalKindRequiresRootReconcile {
-			t.Fatalf("expected unmatched reconcile fallback signal, got %#v", signal)
-		}
-		seen[signal.RootID] = true
-	}
-	for _, root := range roots {
-		if !seen[root.ID] {
-			t.Fatalf("expected unmatched reconcile fallback to emit for %q, got %#v", root.ID, seen)
-		}
+	select {
+	case signal := <-feed.Signals():
+		t.Fatalf("expected an event outside every root to be ignored, got %#v", signal)
+	default:
 	}
 }
 
@@ -194,9 +228,6 @@ func TestFSEventsChangeFeedEmitsSignalForCreatedFile(t *testing.T) {
 			if signal.Kind == ChangeSignalKindDirtyPath && filepath.Clean(signal.Path) == filepath.Clean(filePath) {
 				return
 			}
-			if signal.Kind == ChangeSignalKindDirtyRoot && filepath.Clean(signal.Path) == filepath.Clean(rootPath) {
-				return
-			}
 		}
 	}
 }
@@ -236,9 +267,6 @@ func TestFSEventsChangeFeedContextCancelDoesNotStopActiveStream(t *testing.T) {
 			if signal.Kind == ChangeSignalKindDirtyPath && filepath.Clean(signal.Path) == filepath.Clean(filePath) {
 				return
 			}
-			if signal.Kind == ChangeSignalKindDirtyRoot && filepath.Clean(signal.Path) == filepath.Clean(rootPath) {
-				return
-			}
 		}
 	}
 }
@@ -267,6 +295,15 @@ func TestFSEventsChangeFeedRefreshGenerationAndCloseLifecycle(t *testing.T) {
 	feed.mu.RUnlock()
 	if firstGeneration != 1 || !firstStreamActive {
 		t.Fatalf("expected first refresh to start generation 1, got generation=%d active=%t", firstGeneration, firstStreamActive)
+	}
+
+	firstRoot.FeedCursor = mustEncodeFeedCursorForTest(t, FeedCursor{FeedType: RootFeedTypeFSEvents, FSEventID: 123, UpdatedAt: time.Now().UnixMilli()})
+	if err := feed.Refresh(t.Context(), []RootRecord{firstRoot}); err != nil {
+		t.Fatal(err)
+	}
+	cachedRoots, _ := feed.copyRootSnapshot()
+	if cachedRoots[0].FeedCursor != firstRoot.FeedCursor || feed.streamGeneration != firstGeneration {
+		t.Fatal("same-root refresh must update the cursor without restarting")
 	}
 
 	if err := feed.Refresh(t.Context(), []RootRecord{secondRoot}); err != nil {
@@ -318,4 +355,34 @@ func newStableFSEventsRoot(t *testing.T, prefix string) string {
 	})
 
 	return rootPath
+}
+
+// TestFSEventsAcknowledgementSkipsDurableHistory covers shared-stream replay
+// where another root has an older cursor, including repeated loss markers.
+func TestFSEventsAcknowledgementSkipsDurableHistory(t *testing.T) {
+	feed := NewFSEventsChangeFeed()
+	defer feed.Close()
+	cursor := func(id uint64) string {
+		return mustEncodeFeedCursorForTest(t, FeedCursor{FeedType: RootFeedTypeFSEvents, UpdatedAt: time.Now().UnixMilli(), FSEventID: id})
+	}
+	root := RootRecord{ID: "ack", Path: "/tmp/ack", FeedCursor: cursor(10)}
+	feed.roots = []RootRecord{root}
+	root.FeedCursor = cursor(20)
+	feed.AcknowledgeRoot(root)
+	roots, _ := feed.copyRootSnapshot()
+	got, _ := decodeFeedCursor(roots[0].FeedCursor, RootFeedTypeFSEvents)
+	if got.FSEventID != 20 {
+		t.Fatalf("cursor regressed: %v", got)
+	}
+	for _, flags := range []uint64{fseventFlagItemIsFile | fseventFlagItemModified, fseventFlagMustScanSubDirs | fseventFlagKernelDropped} {
+		if signals := translateFSEvent(roots[0], root.Path, flags, 20, time.Now()); len(signals) != 0 {
+			t.Fatalf("requeued durable history: %v", signals)
+		}
+	}
+	if signals := translateFSEvent(roots[0], root.Path+"/new.txt", fseventFlagItemIsFile|fseventFlagItemCreated, 21, time.Now()); len(signals) != 1 {
+		t.Fatalf("lost new event: %v", signals)
+	}
+	if signals := translateFSEvent(roots[0], root.Path, fseventFlagEventIDsWrapped, 1, time.Now()); len(signals) != 1 {
+		t.Fatalf("lost event-id reset: %v", signals)
+	}
 }

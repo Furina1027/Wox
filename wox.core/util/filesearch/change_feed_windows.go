@@ -18,6 +18,7 @@ import (
 
 const (
 	usnPollInterval              = time.Second
+	usnSignalBufferSize          = 256
 	usnReadBufferSize            = 1 << 20
 	fsctlQueryUSNJournal  uint32 = 0x000900f4
 	fsctlReadUSNJournal   uint32 = 0x000900bb
@@ -29,9 +30,9 @@ const (
 var procOpenFileByID = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenFileById")
 
 type WindowsChangeFeed struct {
-	fallback  *FallbackChangeFeed
+	fallback  *windowsTreeChangeFeed
 	usn       *usnWatcherSet
-	signals   chan ChangeSignal
+	queue     *changeSignalQueue
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -106,8 +107,8 @@ type usnResolvedRecord struct {
 
 func NewWindowsChangeFeed() *WindowsChangeFeed {
 	feed := &WindowsChangeFeed{
-		fallback: NewFallbackChangeFeed(),
-		signals:  make(chan ChangeSignal, 256),
+		fallback: newWindowsTreeChangeFeed(),
+		queue:    newChangeSignalQueue(usnSignalBufferSize),
 		done:     make(chan struct{}),
 	}
 	feed.usn = newUSNWatcherSet(feed.emit)
@@ -122,7 +123,7 @@ func (f *WindowsChangeFeed) Mode() string {
 }
 
 func (f *WindowsChangeFeed) Signals() <-chan ChangeSignal {
-	return f.signals
+	return f.queue.Signals()
 }
 
 func (f *WindowsChangeFeed) Refresh(ctx context.Context, roots []RootRecord) error {
@@ -170,6 +171,7 @@ func (f *WindowsChangeFeed) Close() error {
 	var closeErr error
 	f.closeOnce.Do(func() {
 		close(f.done)
+		f.queue.close()
 		if err := f.usn.Close(); err != nil {
 			closeErr = err
 		}
@@ -197,17 +199,7 @@ func (f *WindowsChangeFeed) forwardFallbackSignals() {
 }
 
 func (f *WindowsChangeFeed) emit(signal ChangeSignal) {
-	if signal.RootID == "" {
-		return
-	}
-	if signal.At.IsZero() {
-		signal.At = time.Now()
-	}
-
-	select {
-	case f.signals <- signal:
-	default:
-	}
+	f.queue.offer(signal)
 }
 
 func newUSNWatcherSet(emit func(ChangeSignal)) *usnWatcherSet {
@@ -377,32 +369,18 @@ func (u *usnWatcherSet) emitResolvedRecords(roots []RootRecord, matcher rootPath
 				// Known USN paths must be routed to the longest matching root. The
 				// previous broadcast woke both a dynamic root and its parent, which
 				// defeated the ownership split and forced unnecessary parent rescans.
-				u.emit(translateUSNDelta(root, journal, cleanPath, record.PathIsDir, record.PathKnown, record.USN, record.Reason, now))
+				if signal, ok := translateUSNDelta(root, journal, cleanPath, record.PathIsDir, record.PathKnown, record.USN, record.Reason, now); ok {
+					u.emit(signal)
+				}
 			}
 			continue
 		}
 
-		cursorText, err := encodeFeedCursor(FeedCursor{
-			FeedType:  RootFeedTypeUSN,
-			UpdatedAt: now.UnixMilli(),
-			JournalID: journal.JournalID,
-			USN:       record.USN,
-			Volume:    journal.Volume,
-		})
-		if err != nil {
-			cursorText = ""
-		}
+		// An unresolvable record used to queue a whole-root reconcile for every
+		// root on the volume. Its parent directory mtime still changed, so the
+		// scanner's coalesced relist finds the change at a fraction of the cost.
 		for _, root := range roots {
-			u.emit(ChangeSignal{
-				Kind:          ChangeSignalKindDirtyRoot,
-				RootID:        root.ID,
-				FeedType:      RootFeedTypeUSN,
-				Path:          root.Path,
-				PathIsDir:     true,
-				PathTypeKnown: true,
-				Cursor:        cursorText,
-				At:            now,
-			})
+			u.emit(newUSNRecoverySignal(root, "usn record path unresolved", now))
 		}
 	}
 }

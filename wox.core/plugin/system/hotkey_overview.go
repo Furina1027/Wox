@@ -25,7 +25,7 @@ type HotkeyOverviewPlugin struct{}
 // GetMetadata declares the dedicated shortcut overview plugin context.
 func (p *HotkeyOverviewPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "0c8f1d9e-4f7a-4c0f-8b7f-2efb6d0b12a4",
+		Id:            common.HotkeyOverviewPluginID,
 		Name:          "i18n:plugin_hotkey_overview_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -61,10 +61,11 @@ func (p *HotkeyOverviewPlugin) Query(ctx context.Context, query plugin.Query) pl
 	return plugin.QueryResponse{
 		Results: []plugin.QueryResult{
 			{
-				Title:    "i18n:plugin_hotkey_overview_title",
-				SubTitle: "i18n:plugin_hotkey_overview_subtitle",
-				Score:    1000,
-				Icon:     hotkeyOverviewIcon,
+				Title:       "i18n:plugin_hotkey_overview_title",
+				SubTitle:    "i18n:plugin_hotkey_overview_subtitle",
+				IdentityKey: "hotkey-overview",
+				Score:       1000,
+				Icon:        hotkeyOverviewIcon,
 				Preview: plugin.WoxPreview{
 					PreviewType: plugin.WoxPreviewTypeHotkeyOverview,
 					PreviewData: p.buildPreviewData(query.Search),
@@ -107,10 +108,11 @@ func (p *HotkeyOverviewPlugin) isGlobalAlias(search string) bool {
 // buildGlobalEntryResult sends users into the plugin query context where full preview layout is available.
 func (p *HotkeyOverviewPlugin) buildGlobalEntryResult() plugin.QueryResult {
 	return plugin.QueryResult{
-		Title:    "i18n:plugin_hotkey_overview_title",
-		SubTitle: "i18n:plugin_hotkey_overview_subtitle",
-		Score:    1000,
-		Icon:     hotkeyOverviewIcon,
+		Title:       "i18n:plugin_hotkey_overview_title",
+		SubTitle:    "i18n:plugin_hotkey_overview_subtitle",
+		IdentityKey: "hotkey-overview",
+		Score:       1000,
+		Icon:        hotkeyOverviewIcon,
 		Actions: []plugin.QueryResultAction{
 			{
 				Name:                   "i18n:plugin_hotkey_overview_open_overview",

@@ -14,6 +14,7 @@ type wildcardQuery struct {
 	expression       *regexp.Regexp
 	hasPathSeparator bool
 	literalCount     int
+	asciiSuffix      string
 }
 
 type quotedSearchQuery struct {
@@ -77,53 +78,6 @@ func normalizePath(path string) string {
 	return cleaned
 }
 
-func buildSearchTerms(name string, path string, pinyinFull string, pinyinInitials string, usePinyin bool) []string {
-	terms := []string{name, path}
-	// Linear fallback searches share the same SearchQuery contract as SQLite.
-	// Keep pinyin terms out completely when the caller disabled pinyin so broad
-	// ASCII fragments from generated pinyin payloads cannot pass final scoring.
-	if usePinyin {
-		terms = append(terms, pinyinFull, pinyinInitials)
-	}
-	return util.UniqueStrings(filterNonEmpty(terms))
-}
-
-func matchSearchQuery(query SearchQuery, name string, path string, pinyinFull string, pinyinInitials string) (bool, int64) {
-	if query.Raw == "" {
-		return false, 0
-	}
-	if query.plan != nil && !recordMatchesExactPhrases(query.plan, docRecord{Path: path}) {
-		return false, 0
-	}
-	if query.wildcard != nil {
-		return query.wildcard.match(name, path)
-	}
-	if query.plan != nil && query.plan.pathLike {
-		return scorePathMatch(path, query.plan.pathQuery)
-	}
-	usePinyin := !query.DisablePinyin
-	return scoreSearchTerms(query.Raw, buildSearchTerms(name, path, pinyinFull, pinyinInitials, usePinyin), usePinyin)
-}
-
-func scoreSearchTerms(query string, terms []string, usePinyin bool) (bool, int64) {
-	bestScore := int64(0)
-	matched := false
-
-	for _, term := range terms {
-		isMatch, score := util.IsStringMatchScore(term, query, usePinyin)
-		if !isMatch {
-			continue
-		}
-
-		if !matched || score > bestScore {
-			matched = true
-			bestScore = score
-		}
-	}
-
-	return matched, bestScore
-}
-
 func compareSearchResults(a SearchResult, b SearchResult) int {
 	switch {
 	case a.Score > b.Score:
@@ -134,9 +88,17 @@ func compareSearchResults(a SearchResult, b SearchResult) int {
 		return -1
 	case !a.IsDir && b.IsDir:
 		return 1
+	case len(a.Name) < len(b.Name):
+		return -1
+	case len(a.Name) > len(b.Name):
+		return 1
 	case a.Name < b.Name:
 		return -1
 	case a.Name > b.Name:
+		return 1
+	case len(a.Path) < len(b.Path):
+		return -1
+	case len(a.Path) > len(b.Path):
 		return 1
 	case a.Path < b.Path:
 		return -1
@@ -157,18 +119,6 @@ func sortAndLimitResults(results []SearchResult, limit int) []SearchResult {
 	}
 
 	return append([]SearchResult(nil), results...)
-}
-
-func filterNonEmpty(values []string) []string {
-	filtered := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		filtered = append(filtered, value)
-	}
-	return filtered
 }
 
 func buildWildcardQuery(raw string) *wildcardQuery {
@@ -193,8 +143,19 @@ func buildWildcardQuery(raw string) *wildcardQuery {
 		return nil
 	}
 
+	suffix := ""
+	if strings.HasPrefix(pattern, "*") && strings.Count(pattern, "*") == 1 && !strings.Contains(pattern, "/") {
+		suffix = pattern[1:]
+		for _, c := range suffix {
+			if c >= 128 {
+				suffix = ""
+				break
+			}
+		}
+	}
 	return &wildcardQuery{
 		expression:       expression,
+		asciiSuffix:      suffix,
 		hasPathSeparator: strings.Contains(pattern, "/"),
 		literalCount:     len(strings.ReplaceAll(pattern, "*", "")),
 	}

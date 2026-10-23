@@ -11,6 +11,7 @@ import (
 	"wox/common"
 	"wox/common/icons"
 
+	"wox/supervisor"
 	woxcomponent "wox/ui/launcher/component"
 	launcherview "wox/ui/launcher/view"
 	woxui "wox/ui/runtime"
@@ -240,10 +241,8 @@ func (a *App) buildLauncher(frame woxui.FrameInfo) woxwidget.Widget {
 		queryHeight, _ = launcherQueryChromeMetrics(queryBoxHeight, snapshot.palette.appPadding, queryAtBottom)
 	}
 	toolbarHeight := float32(0)
-	// The empty launcher is query-box only: keep the footer out of the tree so its row
-	// and edge do not paint until results, a plugin message, or a panel need it.
-	toolbarHasContent := launcherToolbarHasContent(len(snapshot.results), a.effectiveToolbarMessage() != nil, snapshot.actionPanel)
-	if !snapshot.show.HideToolbar && !chromeFullscreen && toolbarHasContent {
+	aboutMenuOpen := snapshot.actionPanel && snapshot.actionPanelPurpose == actionPanelPurposeAbout
+	if !snapshot.show.HideToolbar && !chromeFullscreen && launcherToolbarHasContent(len(snapshot.results), snapshot.toolbarMsg != nil, aboutMenuOpen || snapshot.form != nil) {
 		toolbarHeight = snapshot.densityMetrics.toolbarHeight
 	}
 	refinementHeight := float32(0)
@@ -445,6 +444,9 @@ func (a *App) buildHeader(snapshot viewSnapshot, width, height, queryLineHeight,
 	queryBoxHeight := snapshot.densityMetrics.queryBoxHeightForText(snapshot.editing.Text, queryLineHeight)
 	queryEditorHeight := queryLineHeight + snapshot.densityMetrics.scaled(4) + float32(queryLineCount-1)*queryLineHeight
 	queryLeftPadding := snapshot.densityMetrics.scaled(8)
+	if snapshot.palette.QueryBoxPaddingLeft != nil {
+		queryLeftPadding = float32(max(0, *snapshot.palette.QueryBoxPaddingLeft))
+	}
 	accessoryGap := snapshot.densityMetrics.scaled(12)
 	horizontalPadding := snapshot.palette.appPadding.Left + snapshot.palette.appPadding.Right
 	contentWidth := max(float32(0), width-horizontalPadding-queryLeftPadding-snapshot.densityMetrics.scaled(6))
@@ -512,23 +514,40 @@ func (a *App) buildHeader(snapshot viewSnapshot, width, height, queryLineHeight,
 		loadingSize = snapshot.densityMetrics.scaled(20)
 		queryWidth -= loadingWidth + accessoryGap
 	}
-	statusLabel, statusDescription := "", ""
-	statusWidth := float32(0)
+	var statusTags []launcherview.LauncherStatusTag
 	if util.IsThirdPartyPluginsDisabled() {
-		statusLabel = a.translate("i18n:plugin_feedback_third_party_plugins_disabled_tag")
-		statusDescription = a.translate("i18n:plugin_feedback_third_party_plugins_disabled")
-		metrics, _ := a.window.MeasureText(statusLabel, woxui.TextStyle{Size: snapshot.densityMetrics.scaled(woxcomponent.TagFontSize), Weight: woxui.FontWeightSemibold})
-		statusWidth = metrics.Size.Width + snapshot.densityMetrics.scaled(16)
-		// The persistent mode indicator takes priority over the optional clock on narrow windows.
-		if glance != nil && queryWidth-statusWidth-accessoryGap < snapshot.densityMetrics.scaled(140) {
+		statusTags = append(statusTags, launcherview.LauncherStatusTag{
+			ID: "launcher.plugin-mode", Label: a.translate("i18n:plugin_feedback_third_party_plugins_disabled_tag"),
+			Description: a.translate("i18n:plugin_feedback_third_party_plugins_disabled"),
+		})
+	}
+	if supervisor.DebugModeEnabled() {
+		statusTags = append(statusTags, launcherview.LauncherStatusTag{
+			ID: "launcher.debug-mode", Label: a.translate("i18n:plugin_feedback_debug_tag"),
+			Description: a.translate("i18n:plugin_feedback_debug_disable_subtitle"),
+		})
+	}
+	statusWidth := float32(0)
+	for i := range statusTags {
+		metrics, _ := a.window.MeasureText(statusTags[i].Label, woxui.TextStyle{Size: snapshot.densityMetrics.scaled(woxcomponent.TagFontSize), Weight: woxui.FontWeightSemibold})
+		statusTags[i].Width = metrics.Size.Width + snapshot.densityMetrics.scaled(16)
+		statusWidth += statusTags[i].Width
+	}
+	if len(statusTags) > 0 {
+		gaps := float32(len(statusTags)) * accessoryGap
+		// Session indicators take priority over optional glance content on narrow windows.
+		if glance != nil && queryWidth-statusWidth-gaps < snapshot.densityMetrics.scaled(140) {
 			glance = nil
 			queryWidth += glanceWidth + accessoryGap
 			if snapshot.attentionVisible {
 				queryWidth -= accessoryGap - snapshot.densityMetrics.scaled(4)
 			}
 		}
-		statusWidth = min(statusWidth, max(0, queryWidth-snapshot.densityMetrics.scaled(140)-accessoryGap))
-		queryWidth -= statusWidth + accessoryGap
+		available := max(0, queryWidth-snapshot.densityMetrics.scaled(140)-gaps)
+		for i := range statusTags {
+			statusTags[i].Width *= min(float32(1), available/statusWidth)
+			queryWidth -= statusTags[i].Width + accessoryGap
+		}
 	}
 	queryWidth = max(snapshot.densityMetrics.scaled(140), queryWidth)
 	_, headerPadding := launcherQueryChromeMetrics(queryBoxHeight, snapshot.palette.appPadding, snapshot.show.QueryBoxAtBottom)
@@ -546,8 +565,9 @@ func (a *App) buildHeader(snapshot viewSnapshot, width, height, queryLineHeight,
 		QueryWidth: queryWidth, QueryRadius: snapshot.palette.queryRadius, AppPadding: headerPadding, Theme: snapshot.palette.componentTheme(),
 		Query: a.queryViewProps(snapshot, queryWidth, queryEditorHeight, queryLineHeight), Refinement: refinement, RefinementWidth: refinementWidth,
 		Attention: attention, AttentionWidth: attentionWidth, Glance: glance, GlanceWidth: glanceWidth, Icon: queryIcon, Icons: queryIcons,
-		StatusLabel: statusLabel, StatusDescription: statusDescription, StatusWidth: statusWidth,
-		Loading: loading, LoadingWidth: loadingWidth, LoadingSize: loadingSize, LoadingColor: snapshot.palette.cursor,
+		StatusTags: statusTags,
+		Loading:    loading, LoadingWidth: loadingWidth, LoadingSize: loadingSize, LoadingColor: snapshot.palette.cursor,
+		ShowQuerySeparator: len(snapshot.results) > 0,
 		OnDragStart: func() {
 			if err := a.window.StartDragging(); err != nil {
 				log.Printf("start launcher window drag: %v", err)

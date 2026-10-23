@@ -448,6 +448,14 @@ func (a *APIImpl) GetTranslation(ctx context.Context, key string) string {
 }
 
 func (a *APIImpl) GetSetting(ctx context.Context, key string) string {
+	// Wox-owned workflow settings can derive their displayed value from one atomic persisted state.
+	if provider, ok := a.pluginInstance.Plugin.(interface {
+		GetSettingOverride(context.Context, string) (string, bool)
+	}); ok {
+		if value, handled := provider.GetSettingOverride(ctx, key); handled {
+			return value
+		}
+	}
 	// try to get platform specific setting first
 	platformSpecificKey := key + "@" + util.GetCurrentPlatform()
 	v, exist := a.pluginInstance.Setting.Get(platformSpecificKey)
@@ -600,6 +608,12 @@ func (a *APIImpl) UpdateResult(ctx context.Context, result UpdatableResult) bool
 	}
 	if util.GetContextSessionId(ctx) != "" && util.GetContextQueryId(ctx) != "" {
 		if _, found := GetPluginManager().findResultCacheByIdWithContext(ctx, result.Id); !found {
+			return false
+		}
+	}
+	if _, command, err := WebViewScriptUpdate(result.Preview); command {
+		cache, found := GetPluginManager().findResultCacheByIdWithContext(ctx, result.Id)
+		if err != nil || !found || cache.PluginInstance != a.pluginInstance || !IsInlineWebViewPreview(cache.Result.Preview) {
 			return false
 		}
 	}

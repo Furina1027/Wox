@@ -73,7 +73,7 @@ const (
 
 func (r *SysPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "227f7d64-df08-4e35-ad05-98a26d540d06",
+		Id:            common.SysPluginID,
 		Name:          "i18n:plugin_sys_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -160,6 +160,20 @@ func (r *SysPlugin) buildCommands() []SysCommand {
 			SupportedOS: []string{util.PlatformWindows, util.PlatformMacOS, util.PlatformLinux},
 			Action: func(ctx context.Context, actionContext plugin.ActionContext) {
 				r.runSystemAction(ctx, "empty_trash", runEmptyTrashCommand)
+			},
+		},
+		{
+			ID:                     "restart_wox",
+			Title:                  "i18n:plugin_sys_restart_wox",
+			Icon:                   icons.Get(icons.ControlRefresh),
+			Aliases:                []string{"restart wox", "relaunch wox", "重启 Wox", "重新启动 Wox"},
+			PreventHideAfterAction: true,
+			Action: func(ctx context.Context, actionContext plugin.ActionContext) {
+				if err := ui.GetUIManager().RestartApp(ctx); err != nil {
+					util.GetLogger().Error(ctx, fmt.Sprintf("failed to restart Wox: %s", err))
+					r.api.Notify(ctx, fmt.Sprintf(r.api.GetTranslation(ctx, "plugin_sys_restart_wox_failed"), err.Error()))
+					return
+				}
 			},
 		},
 		{
@@ -696,9 +710,10 @@ func (r *SysPlugin) Query(ctx context.Context, query plugin.Query) plugin.QueryR
 			}
 
 			results = append(results, plugin.QueryResult{
-				Title: title,
-				Score: matchScore,
-				Icon:  pluginIcon,
+				Title:       title,
+				IdentityKey: "plugin-settings:" + instance.Metadata.Id,
+				Score:       matchScore,
+				Icon:        pluginIcon,
 				Actions: []plugin.QueryResultAction{
 					{
 						Name: "i18n:plugin_sys_execute",
@@ -862,12 +877,28 @@ func (r *SysPlugin) buildCommandResult(ctx context.Context, query plugin.Query, 
 	}
 
 	return plugin.QueryResult{
-		Title:    title,
-		SubTitle: subtitle,
-		Score:    score,
-		Icon:     command.Icon,
-		Actions:  []plugin.QueryResultAction{r.buildCommandAction(command, contextData)},
+		Title:       title,
+		SubTitle:    subtitle,
+		IdentityKey: sysCommandIdentityKey(command, contextData),
+		Score:       score,
+		Icon:        command.Icon,
+		Actions:     []plugin.QueryResultAction{r.buildCommandAction(command, contextData)},
 	}
+}
+
+// sysCommandIdentityKey keeps a system command stable across translated titles.
+// Set Volume includes the entered percent so each volume is its own result.
+func sysCommandIdentityKey(command SysCommand, contextData common.ContextData) string {
+	id := strings.TrimSpace(command.ID)
+	if id == "" {
+		return ""
+	}
+	if id == "set-volume" {
+		if volume := strings.TrimSpace(contextData[sysCommandVolumeContextKey]); volume != "" {
+			return id + ":" + volume
+		}
+	}
+	return id
 }
 
 func (r *SysPlugin) handleMRURestore(ctx context.Context, mruData plugin.MRUData) (*plugin.QueryResult, error) {
@@ -893,10 +924,11 @@ func (r *SysPlugin) handleMRURestore(ctx context.Context, mruData plugin.MRUData
 	}
 
 	result := &plugin.QueryResult{
-		Title:    foundCommand.Title,
-		SubTitle: foundCommand.SubTitle,
-		Icon:     foundCommand.Icon,
-		Actions:  []plugin.QueryResultAction{r.buildCommandAction(*foundCommand, mruData.ContextData)},
+		Title:       foundCommand.Title,
+		SubTitle:    foundCommand.SubTitle,
+		IdentityKey: sysCommandIdentityKey(*foundCommand, mruData.ContextData),
+		Icon:        foundCommand.Icon,
+		Actions:     []plugin.QueryResultAction{r.buildCommandAction(*foundCommand, mruData.ContextData)},
 	}
 
 	return result, nil

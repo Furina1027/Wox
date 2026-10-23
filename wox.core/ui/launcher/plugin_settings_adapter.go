@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"wox/network"
 
 	woxplugin "wox/plugin"
 	woxcomponent "wox/ui/launcher/component"
@@ -67,12 +68,35 @@ func (a *App) pluginListProps(snapshot settingsSnapshot, width, height, imageSca
 	filtered := filterPlugins(plugins.Plugins, plugins.PluginSearch.Text, plugins.PluginFilters, plugins.PluginsStore, snapshot.general.Data.UsePinYin)
 	props.Placeholder = fmt.Sprintf(a.translate("i18n:ui_search_plugins"), len(filtered))
 	a.applyPluginCatalogEmptyState(&props, plugins, filtered, iconTint, imageScale)
-	props.Entries = a.pluginListEntries(snapshot, filtered)
+	props.Entries = a.pluginListEntries(snapshot, filtered, imageScale)
+	props.ResolveIcon = a.pluginListIconResolver(filtered, imageScale)
 	return props
 }
 
-// pluginListEntries builds catalog rows, grouping installed plugins by enabled state.
-func (a *App) pluginListEntries(snapshot settingsSnapshot, filtered []filteredPlugin) []launcherview.PluginListEntry {
+// pluginListIconResolver decodes a catalog icon at the row's physical size.
+// The list asks for it only while the row is on screen. Decoding every store
+// icon at 256px overflows the shared image cache, and visible rows then
+// flicker between artwork and the fallback color.
+func (a *App) pluginListIconResolver(filtered []filteredPlugin, imageScale float32) func(string) *woxui.Image {
+	icons := make(map[string]woxImage, len(filtered))
+	for _, entry := range filtered {
+		icons[entry.plugin.ID] = entry.plugin.Icon
+	}
+	size := physicalImageSize(launcherview.PluginListIconSize, imageScale)
+	background := settingsPalette().Background
+	return func(id string) *woxui.Image {
+		source, ok := icons[id]
+		if !ok {
+			return nil
+		}
+		return a.imageForSurface(source, size, background)
+	}
+}
+
+// pluginListEntries builds catalog rows. Installed plugins group by enabled state.
+// Store plugins group by catalog, with the official store first. A single visible
+// catalog stays a flat list so the header is not repeated above every row.
+func (a *App) pluginListEntries(snapshot settingsSnapshot, filtered []filteredPlugin, imageScale float32) []launcherview.PluginListEntry {
 	plugins := snapshot.plugins
 	visibleIndex := 0
 	appendItem := func(entries []launcherview.PluginListEntry, entry filteredPlugin) []launcherview.PluginListEntry {
@@ -88,22 +112,33 @@ func (a *App) pluginListEntries(snapshot settingsSnapshot, filtered []filteredPl
 		} else if plugin.IsDev {
 			badge = a.translate("i18n:ui_plugin_dev_tag")
 		}
+		if network.IsOffline() && !plugin.IsSystem {
+			badge = a.translate("i18n:ui_plugin_offline_paused")
+		}
 		itemIndex := visibleIndex
 		visibleIndex++
 		return append(entries, launcherview.PluginListEntry{
 			ID: plugin.ID,
 			Item: launcherview.PluginListItem{
 				ID: plugin.ID, Name: plugin.Name, Status: status, Badge: badge, ShowInstalledIcon: plugins.PluginsStore && plugin.IsInstalled,
-				Icon: a.imageForSurface(plugin.Icon, 256, settingsPalette().Background), FallbackColor: resultColors[itemIndex%len(resultColors)], Selected: index == plugins.PluginSelected,
+				FallbackColor: resultColors[itemIndex%len(resultColors)], Selected: index == plugins.PluginSelected,
 				Highlighted: snapshot.highlight == "plugin:"+plugin.ID, Disabled: plugin.IsDisable,
 				OnSelect: func() { a.selectPlugin(index) },
 			},
 		})
 	}
 	if plugins.PluginsStore {
-		entries := make([]launcherview.PluginListEntry, 0, len(filtered))
-		for _, entry := range filtered {
-			entries = appendItem(entries, entry)
+		sections := groupStorePlugins(filtered)
+		showHeaders := len(sections) > 1
+		entries := make([]launcherview.PluginListEntry, 0, len(filtered)+len(sections))
+		for _, section := range sections {
+			if showHeaders {
+				label, icon := a.pluginStoreSection(section.ID, imageScale)
+				entries = append(entries, launcherview.PluginListEntry{ID: section.ID, Header: label, HasHeaderIcon: true, HeaderIcon: icon})
+			}
+			for _, entry := range section.Plugins {
+				entries = appendItem(entries, entry)
+			}
 		}
 		return entries
 	}
@@ -120,6 +155,17 @@ func (a *App) pluginListEntries(snapshot settingsSnapshot, filtered []filteredPl
 		}
 	}
 	return entries
+}
+
+// pluginStoreSection resolves one catalog title and its brand mark.
+func (a *App) pluginStoreSection(storeID string, imageScale float32) (string, *woxui.Image) {
+	label, source := woxplugin.PluginStorePresentation(storeID)
+	label = a.translate(label)
+	if a.imageLastUsed == nil || source.IsEmpty() {
+		return label, nil
+	}
+	size := physicalImageSize(launcherview.PluginListSectionIconSize, imageScale)
+	return label, a.imageForSurface(fromCoreImage(source), size, settingsPalette().Background)
 }
 
 func (a *App) applyPluginCatalogEmptyState(props *launcherview.PluginListProps, plugins pluginSettingsSnapshot, filtered []filteredPlugin, iconTint woxui.Color, imageScale float32) {
@@ -164,6 +210,10 @@ func (a *App) pluginDetailProps(snapshot settingsSnapshot, width, height, imageS
 		ScrollID: "plugin-detail-" + plugin.ID,
 		Error:    plugins.PluginOperationError,
 	}
+	labelWidth := a.pluginFormLabelWidth(form.definitions[1:])
+	if plugin.HasNativeSettings {
+		labelWidth = max(labelWidth, a.pluginFormLabelWidth([]formDefinition{{Value: formDefinitionValue{Label: "i18n:ui_plugin_native_settings_title"}}}))
+	}
 	callbacks := formFieldCallbacks{
 		idPrefix:         "plugin-settings",
 		labelWidth:       a.pluginFormLabelWidth(form.definitions[1:]),
@@ -183,8 +233,8 @@ func (a *App) pluginDetailProps(snapshot settingsSnapshot, width, height, imageS
 		serviceBusy:      form.saving,
 		fieldErrors:      form.fieldErrors,
 	}
-	if form.statusError {
-		callbacks.serviceError = form.status
+	if plugins.PluginSettingAction.pluginID == plugin.ID {
+		callbacks.serviceError = plugins.PluginSettingAction.errorText
 	}
 	editor.DescriptionDetail = a.pluginStoreDetailProps(snapshot, plugin, width, imageScale)
 	metadata := a.pluginMetadataProps(plugin, "privacy")
@@ -221,6 +271,24 @@ func (a *App) pluginDetailProps(snapshot settingsSnapshot, width, height, imageS
 			Width: innerWidth, Highlighted: snapshot.highlight == "plugin-setting:"+plugin.ID+"\x00"+definition.Value.Key, Child: field, Theme: snapshot.palette,
 		})
 		rows = append(rows, woxwidget.Keyed{Key: pluginSettingRowKey(formIndex), Child: target})
+	}
+	if plugin.HasNativeSettings {
+		pluginID := plugin.ID
+		field := launcherview.FormButtonField(launcherview.FormButtonFieldProps{
+			ID: "plugin-native-settings-field", Label: a.translate("i18n:ui_plugin_native_settings_title"),
+			Description: a.translate("i18n:ui_plugin_native_settings_description"),
+			ButtonID:    "plugin-native-settings", ButtonLabel: a.translate("i18n:ui_plugin_native_settings_open"),
+			Disabled: a.nativeSettingsPluginID == pluginID, Width: innerWidth, LabelWidth: callbacks.labelWidth, Theme: snapshot.palette,
+			OnTap: func() { a.openNativePluginSettings(pluginID) },
+		})
+		rows = append([]woxwidget.Widget{woxwidget.Keyed{Key: "plugin-native-settings-row", Child: field}}, rows...)
+	}
+	if form.statusError && strings.TrimSpace(form.status) != "" {
+		status := woxwidget.TextBlock{
+			Value: form.status, Width: innerWidth, LineHeight: 18,
+			Style: woxui.TextStyle{Size: snapshot.palette.Scaled(woxcomponent.SettingsHelpFontSize)}, Color: snapshot.palette.Error,
+		}
+		rows = append([]woxwidget.Widget{woxwidget.Keyed{Key: "plugin-settings-status", Child: status}}, rows...)
 	}
 	editor.Form = &launcherview.PluginFormProps{
 		SectionLabel: a.translate("i18n:ui_plugin_tab_settings"),
@@ -676,7 +744,6 @@ func (a *App) pluginFilterFields(filters pluginFilterState, store bool) []launch
 // pluginFilterChoiceItem adapts one catalog filter dropdown to the shared settings picker.
 func (a *App) pluginFilterChoiceItem(id string) settingItem {
 	filters := a.pluginSettings.Filters()
-	store := a.pluginSettings.PluginsStore()
 	var value string
 	var title string
 	switch id {
@@ -696,7 +763,7 @@ func (a *App) pluginFilterChoiceItem(id string) settingItem {
 	if pluginFilterIsAll(value) {
 		value = pluginFilterAll
 	}
-	return settingItem{key: "plugin-filter-" + id, title: title, value: value, choices: a.pluginFilterChoices(id, store)}
+	return settingItem{key: "plugin-filter-" + id, title: title, value: value, choices: a.pluginFilterChoices(id)}
 }
 
 // pluginFilterChoiceLabel returns the visible value for one exclusive filter dropdown.
@@ -704,7 +771,7 @@ func (a *App) pluginFilterChoiceLabel(id, value string) string {
 	if pluginFilterIsAll(value) {
 		value = pluginFilterAll
 	}
-	for _, choice := range a.pluginFilterChoices(id, a.pluginSettings.PluginsStore()) {
+	for _, choice := range a.pluginFilterChoices(id) {
 		if choice.value == value {
 			return choice.label
 		}
@@ -713,7 +780,7 @@ func (a *App) pluginFilterChoiceLabel(id, value string) string {
 }
 
 // pluginFilterChoices lists the exclusive options for one catalog filter dropdown.
-func (a *App) pluginFilterChoices(id string, store bool) []settingChoice {
+func (a *App) pluginFilterChoices(id string) []settingChoice {
 	all := settingChoice{value: pluginFilterAll, label: a.translate("i18n:ui_all")}
 	switch id {
 	case "enabled":
@@ -725,29 +792,36 @@ func (a *App) pluginFilterChoices(id string, store bool) []settingChoice {
 	case "install":
 		return []settingChoice{all, {value: pluginFilterInstalled, label: a.translate("i18n:ui_plugin_filter_installed")}, {value: pluginFilterUninstalled, label: a.translate("i18n:ui_not_installed")}}
 	case "runtime":
-		choices := []settingChoice{all, {value: pluginFilterRuntimeNodeJS, label: a.translate("i18n:ui_runtime_name_nodejs")}, {value: pluginFilterRuntimePython, label: a.translate("i18n:ui_runtime_name_python")}}
-		if store {
-			return append(choices, settingChoice{value: pluginFilterRuntimeScript, label: a.translate("i18n:ui_runtime_name_script")})
+		choices := []settingChoice{
+			all,
+			{value: pluginFilterRuntimeNodeJS, label: a.translate("i18n:ui_runtime_name_nodejs")},
+			{value: pluginFilterRuntimePython, label: a.translate("i18n:ui_runtime_name_python")},
+			{value: pluginFilterRuntimeScript, label: a.translate("i18n:ui_runtime_name_script")},
 		}
-		return append(choices,
-			settingChoice{value: pluginFilterRuntimeScriptNodeJS, label: a.translate("i18n:ui_plugin_filter_runtime_script_nodejs")},
-			settingChoice{value: pluginFilterRuntimeScriptPython, label: a.translate("i18n:ui_plugin_filter_runtime_script_python")},
-		)
+		for _, runtime := range thirdPartyRuntimeFilterValues() {
+			choices = append(choices, settingChoice{value: runtime, label: a.localizedRuntimeDisplayName(runtime)})
+		}
+		return choices
 	default:
 		return nil
 	}
 }
 
-// pluginRuntimeLabel normalizes host runtimes for the detail chip. Go is omitted
-// because it is the native plugin host and the tag adds no useful distinction.
+// pluginRuntimeLabel normalizes host runtimes for the detail chip. Wox and Flow
+// prefixes keep the two plugin families distinct. Go is omitted because it is
+// the native plugin host and the tag adds no useful distinction.
 func pluginRuntimeLabel(runtime string) string {
 	switch strings.ToLower(strings.TrimSpace(runtime)) {
 	case "nodejs":
-		return "NodeJS"
+		return "Wox Node.js"
 	case "python":
-		return "Python"
+		return "Wox Python"
 	case "script":
-		return "Script"
+		return "Wox Script"
+	case "flowjsonrpc":
+		return "Flow JSON-RPC"
+	case "flowdotnet":
+		return "Flow .NET"
 	case "go":
 		return ""
 	default:
@@ -792,6 +866,16 @@ func (a *App) pluginManagementActions(snapshot settingsSnapshot, plugin pluginSe
 			ID: "plugin-directory", Label: label, Width: width, Enabled: !busy, OnTap: a.openSelectedPluginDirectory,
 		})
 	}
+	if network.IsOffline() && !plugin.IsSystem {
+		for index := range actions {
+			if actions[index].ID == "plugin-enable" || actions[index].ID == "plugin-disable" || actions[index].ID == "plugin-upgrade" {
+				actions[index].Enabled = false
+				actions[index].Label = a.translate("i18n:ui_plugin_offline_paused")
+				actions[index].OnTap = nil
+			}
+		}
+	}
+
 	return actions
 }
 

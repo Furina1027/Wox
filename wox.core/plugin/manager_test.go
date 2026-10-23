@@ -708,6 +708,49 @@ func TestPolishUpdatableResultFillsEmptySelectionPreview(t *testing.T) {
 	assert.Contains(t, result.Preview.PreviewData, "note.txt")
 }
 
+func TestBuildQueryResultsSnapshotPlacesPinAheadOfHigherScore(t *testing.T) {
+	query := Query{Id: "query-pin", SessionId: "session-pin", Type: QueryTypeInput, Search: "cb"}
+	manager := &Manager{
+		sessionQueryResultCache: util.NewHashMap[string, *util.HashMap[string, *QueryResultSet]](),
+	}
+	resultSet := newQueryResultSet(query)
+	// Ten minutes newer than the pin. Display order uses the pin tier, not this score.
+	const copiedAt int64 = 1_700_000_000_000
+	resultSet.Results.Store("newer", &QueryResultCache{
+		Result: QueryResult{Id: "newer", Title: "400K xof in €", Score: copiedAt + 10*60*1000, Group: "Today", GroupScore: 90},
+	})
+	resultSet.Results.Store("pinned", &QueryResultCache{
+		Result: QueryResult{Id: "pinned", Title: "text", Score: copiedAt, Group: "Today", GroupScore: 90, Tails: []QueryResultTail{queryPinTail()}},
+	})
+	resultSet.Results.Store("older-pin", &QueryResultCache{
+		Result: QueryResult{Id: "older-pin", Title: "old pin", Score: 100, Group: "History", GroupScore: 10, Tails: []QueryResultTail{queryPinTail()}},
+	})
+	sessionQueries := util.NewHashMap[string, *QueryResultSet]()
+	sessionQueries.Store(query.Id, resultSet)
+	manager.sessionQueryResultCache.Store(query.SessionId, sessionQueries)
+
+	results := manager.BuildQueryResultsSnapshot(query.SessionId, query.Id)
+	if len(results) != 4 {
+		t.Fatalf("snapshot length = %d, want 4", len(results))
+	}
+	if results[0].Id != "pinned" || results[0].IsGroup {
+		t.Fatalf("first result = %#v, want newer pin", results[0])
+	}
+	if results[1].Id != "older-pin" || results[1].IsGroup {
+		t.Fatalf("second result = %#v, want older pin", results[1])
+	}
+	if !results[2].IsGroup || results[2].Title != "Today" {
+		t.Fatalf("third result = %#v, want Today header", results[2])
+	}
+	if results[3].Id != "newer" || results[3].IsGroup {
+		t.Fatalf("fourth result = %#v, want unpinned clipboard row", results[3])
+	}
+}
+
+func queryPinTail() QueryResultTail {
+	return QueryResultTail{ContextData: common.ContextData{favoriteTailContextDataKey: favoriteTailContextDataValue}}
+}
+
 func TestBuildQueryResultsSnapshotKeepsUngroupedResultsAboveFileGroup(t *testing.T) {
 	query := Query{Id: "query-1", SessionId: "session-1", Type: QueryTypeInput, Search: "scottqian"}
 	manager := &Manager{
@@ -736,6 +779,64 @@ func TestBuildQueryResultsSnapshotKeepsUngroupedResultsAboveFileGroup(t *testing
 	}
 	if results[2].Id != "file" || results[2].IsGroup {
 		t.Fatalf("third result = %#v, want file result under group", results[2])
+	}
+}
+
+func TestBuildQueryResultsSnapshotPrefersShorterTitleAndSubtitleOnEqualScore(t *testing.T) {
+	query := Query{Id: "query-tie", SessionId: "session-tie", Type: QueryTypeInput, Search: "qqyy"}
+	manager := &Manager{
+		sessionQueryResultCache: util.NewHashMap[string, *util.HashMap[string, *QueryResultSet]](),
+	}
+	resultSet := newQueryResultSet(query)
+	resultSet.Results.Store("lyric", &QueryResultCache{
+		Result: QueryResult{
+			Id:       "lyric",
+			Title:    "陈慧娴 - 千千阕歌 - 301 - 永远是你的朋友_qm.qrc",
+			SubTitle: `C:\Users\qianl\AppData\Roaming\Tencent\QQMusic\QQMusicCache\QQMusicLyricNew\陈慧娴 - 千千阕歌 - 301 - 永远是你的朋友_qm.qrc`,
+			Score:    200,
+			Group:    "Files",
+		},
+	})
+	resultSet.Results.Store("folder", &QueryResultCache{
+		Result: QueryResult{
+			Id:       "folder",
+			Title:    "QQ音乐",
+			SubTitle: `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\腾讯软件\QQ音乐`,
+			Score:    200,
+			Group:    "Files",
+		},
+	})
+	resultSet.Results.Store("png-deep", &QueryResultCache{
+		Result: QueryResult{
+			Id:       "png-deep",
+			Title:    "QQ音乐.png",
+			SubTitle: `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\腾讯软件\QQ音乐.png`,
+			Score:    200,
+			Group:    "Files",
+		},
+	})
+	resultSet.Results.Store("png-short", &QueryResultCache{
+		Result: QueryResult{
+			Id:       "png-short",
+			Title:    "QQ音乐.png",
+			SubTitle: `C:\Users\qianl\.sofast\icons\QQ音乐.png`,
+			Score:    200,
+			Group:    "Files",
+		},
+	})
+	sessionQueries := util.NewHashMap[string, *QueryResultSet]()
+	sessionQueries.Store(query.Id, resultSet)
+	manager.sessionQueryResultCache.Store(query.SessionId, sessionQueries)
+
+	results := manager.BuildQueryResultsSnapshot(query.SessionId, query.Id)
+	if len(results) != 5 {
+		t.Fatalf("snapshot length = %d, want 5", len(results))
+	}
+	wantIDs := []string{"folder", "png-short", "png-deep", "lyric"}
+	for i, wantID := range wantIDs {
+		if results[i+1].Id != wantID {
+			t.Fatalf("results[%d].Id = %q, want %q (results=%#v)", i+1, results[i+1].Id, wantID, results)
+		}
 	}
 }
 
@@ -816,9 +917,21 @@ func TestRestoreMRUItemSkipsSlowPluginAndKeepsFastOne(t *testing.T) {
 	}
 }
 
-func TestNewResultHashFromPartsPrefersScoreKey(t *testing.T) {
-	byScoreKey := setting.NewResultHashFromParts("plugin-id", "title", "subtitle", "score-key")
-	assert.Equal(t, setting.NewResultHash("plugin-id", "score-key", ""), byScoreKey)
+func TestResultIdentityHashIgnoresTranslatedTitleWhenIdentityKeyIsSet(t *testing.T) {
+	raw := resultIdentityHash("sys", QueryResult{Title: "i18n:plugin_sys_open_system_settings", IdentityKey: "open_system_settings"})
+	translated := resultIdentityHash("sys", QueryResult{Title: "Open System Settings", IdentityKey: "open_system_settings"})
+	if raw != translated {
+		t.Fatalf("score key identity changed after translation: %s vs %s", raw, translated)
+	}
+	byTitle := resultIdentityHash("sys", QueryResult{Title: "Open System Settings"})
+	if byTitle == translated {
+		t.Fatal("title identity should differ from score key identity")
+	}
+}
+
+func TestNewResultHashFromPartsPrefersIdentityKey(t *testing.T) {
+	byIdentityKey := setting.NewResultHashFromParts("plugin-id", "title", "subtitle", "score-key")
+	assert.Equal(t, setting.NewResultHash("plugin-id", "score-key", ""), byIdentityKey)
 
 	byTitle := setting.NewResultHashFromParts("plugin-id", "title", "subtitle", "")
 	assert.Equal(t, setting.NewResultHash("plugin-id", "title", "subtitle"), byTitle)

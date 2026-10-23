@@ -1,6 +1,7 @@
 package setting
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"regexp"
@@ -19,9 +20,11 @@ type WoxSetting struct {
 	IgnoreHotkeysOnFullscreen *PlatformValue[bool]
 	IgnoredHotkeyApps         *PlatformValue[[]IgnoredHotkeyApp]
 	LogLevel                  *WoxSettingValue[string]
-	UsePinYin                 *WoxSettingValue[bool]
-	SwitchInputMethodABC      *WoxSettingValue[bool]
-	HideOnStart               *WoxSettingValue[bool]
+	// UseSoftwareRendering is a device-local driver workaround, applied only at startup.
+	UseSoftwareRendering *WoxSettingValue[bool]
+	UsePinYin            *WoxSettingValue[bool]
+	SwitchInputMethodABC *WoxSettingValue[bool]
+	HideOnStart          *WoxSettingValue[bool]
 	// OnboardingFinished records whether this user data directory has already
 	// seen the first-run guide. This is independent of account age because old
 	// users who never saw the guide should still get one skippable pass.
@@ -53,6 +56,9 @@ type WoxSetting struct {
 	// synced because each device may target a different test server.
 	CloudSyncServerUrl       *WoxSettingValue[string]
 	CloudSyncDisabledPlugins *WoxSettingValue[[]string]
+	// HiddenPluginStores lists catalog ids omitted from the store plugin page.
+	// An empty list shows every catalog. The official Wox store is never omitted.
+	HiddenPluginStores *WoxSettingValue[[]string]
 
 	// HTTP proxy settings
 	HttpProxyEnabled *PlatformValue[bool]
@@ -95,11 +101,12 @@ type WoxSetting struct {
 
 	QueryHistories           *WoxSettingValue[[]QueryHistory]
 	QueryCompletionFeedbacks *WoxSettingValue[[]QueryCompletionFeedback]
-	PinedResults             *WoxSettingValue[*util.HashMap[ResultHash, bool]]
+	PinedResults             *WoxSettingValue[*util.HashMap[ResultHash, PinedQueryResult]]
 	ActionedResults          *WoxSettingValue[*util.HashMap[ResultHash, []ActionedResult]]
 
 	// Anonymous usage statistics
 	EnableAnonymousUsageStats *WoxSettingValue[bool]
+	EnableOfflineMode         *WoxSettingValue[bool]
 
 	// IgnoredDoctorChecks stores doctor check types the user has dismissed.
 	// Ignored checks are skipped in the toolbar but still visible in the
@@ -308,10 +315,10 @@ func NewResultHash(pluginId, title, subTitle string) ResultHash {
 	return ResultHash(util.Md5([]byte(fmt.Sprintf("%s%s%s", pluginId, title, subTitle))))
 }
 
-// NewResultHashFromParts resolves the stable result identity used by ranking and favorites.
-func NewResultHashFromParts(pluginId, title, subTitle, scoreKey string) ResultHash {
-	if strings.TrimSpace(scoreKey) != "" {
-		return NewResultHash(pluginId, scoreKey, "")
+// NewResultHashFromParts resolves the stable result identity used by usage history, MRU restore, and query pins.
+func NewResultHashFromParts(pluginId, title, subTitle, identityKey string) ResultHash {
+	if strings.TrimSpace(identityKey) != "" {
+		return NewResultHash(pluginId, identityKey, "")
 	}
 	return NewResultHash(pluginId, title, subTitle)
 }
@@ -416,6 +423,7 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		LogLevel: NewWoxSettingValueWithValidator(store, "LogLevel", LogLevelInfo, func(level string) bool {
 			return strings.EqualFold(level, LogLevelInfo) || strings.EqualFold(level, LogLevelDebug)
 		}),
+		UseSoftwareRendering: NewLocalWoxSettingValue(store, "UseSoftwareRendering", false),
 		UsePinYin:            NewWoxSettingValue(store, "UsePinYin", usePinYin),
 		SwitchInputMethodABC: NewWoxSettingValue(store, "SwitchInputMethodABC", false),
 		ShowTray:             NewWoxSettingValue(store, "ShowTray", true),
@@ -436,7 +444,7 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		AppFontFamily:                      NewPlatformValue(store, "AppFontFamily", "", "", ""),
 		EnableQueryCompletionHint:          NewWoxSettingValue(store, "EnableQueryCompletionHint", false),
 		EnableGlance:                       NewWoxSettingValue(store, "EnableGlance", true),
-		PrimaryGlance:                      NewWoxSettingValue(store, "PrimaryGlance", GlanceRef{PluginId: "e3ad9f18-fbbe-4f22-8c1b-8274c751f6e6" /* system glance plugin id*/, GlanceId: "time"}),
+		PrimaryGlance:                      NewWoxSettingValue(store, "PrimaryGlance", GlanceRef{PluginId: common.GlancePluginID /* system glance plugin id*/, GlanceId: "time"}),
 		HideGlanceIcon:                     NewWoxSettingValue(store, "HideGlanceIcon", false),
 		ShowScoreTail:                      NewWoxSettingValue(store, "ShowScoreTail", false),
 		ShowPerformanceTail:                NewWoxSettingValue(store, "ShowPerformanceTail", false),
@@ -451,6 +459,7 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		CustomNodejsPath:                   NewPlatformValue(store, "CustomNodejsPath", "", "", ""),
 		CloudSyncServerUrl:                 NewLocalWoxSettingValue(store, "CloudSyncServerUrl", ""),
 		CloudSyncDisabledPlugins:           NewWoxSettingValue(store, "CloudSyncDisabledPlugins", []string{}),
+		HiddenPluginStores:                 NewWoxSettingValue(store, "HiddenPluginStores", []string{}),
 		EnableAutoBackup:                   NewWoxSettingValue(store, "EnableAutoBackup", true),
 		EnableAutoUpdate:                   NewWoxSettingValue(store, "EnableAutoUpdate", true),
 		ReleaseChannel:                     NewWoxSettingValueWithValidator(store, "ReleaseChannel", ReleaseChannelStable, IsValidReleaseChannel),
@@ -463,9 +472,18 @@ func NewWoxSetting(store *WoxSettingStore) *WoxSetting {
 		TrayQueries:                        NewWoxSettingValue(store, "TrayQueries", []TrayQuery{}),
 		QueryHistories:                     NewWoxSettingValue(store, "QueryHistories", []QueryHistory{}),
 		QueryCompletionFeedbacks:           NewWoxSettingValue(store, "QueryCompletionFeedback", []QueryCompletionFeedback{}),
-		PinedResults:                       NewWoxSettingValue(store, "PinedResults", util.NewHashMap[ResultHash, bool]()),
+		PinedResults:                       NewWoxSettingValue(store, "PinedResults", util.NewHashMap[ResultHash, PinedQueryResult]()),
 		ActionedResults:                    NewWoxSettingValue(store, "ActionedResults", util.NewHashMap[ResultHash, []ActionedResult]()),
+		EnableOfflineMode:                  NewLocalWoxSettingValue(store, "EnableOfflineMode", false),
 		EnableAnonymousUsageStats:          NewWoxSettingValue(store, "EnableAnonymousUsageStats", true),
 		IgnoredDoctorChecks:                NewWoxSettingValue(store, "IgnoredDoctorChecks", []string{}),
 	}
+}
+
+// ApplyHTTPProxy pushes the saved proxy switch and address onto the shared HTTP client.
+func (w *WoxSetting) ApplyHTTPProxy(ctx context.Context) {
+	if w == nil || w.HttpProxyEnabled == nil || w.HttpProxyUrl == nil {
+		return
+	}
+	util.ApplyHTTPProxy(ctx, w.HttpProxyEnabled.Get(), w.HttpProxyUrl.Get())
 }

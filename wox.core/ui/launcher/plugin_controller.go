@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"wox/ui/contract"
@@ -34,13 +33,19 @@ type pluginSettingsSnapshot struct {
 	PluginOperation      string
 	PluginOperationError string
 	PluginUninstallArmed string
+	PluginSettingAction  pluginSettingActionState
 }
 
-// pluginSettingsController owns the Plugin tab state: installed/store catalog,
-// selection, search, advanced filters, detail tab, install/uninstall/enable/disable
-// operation progress, and the plugin settings inline form. All 15 fields that used to
-// live on App are held here; App methods became thin wrappers that call the controller's
-// getters/setters while coordinating cross-domain state in UI-thread transactions.
+// pluginSettingActionState belongs to the operation, so form refreshes cannot discard its progress or error.
+type pluginSettingActionState struct {
+	pluginID  string
+	actionID  string
+	errorText string
+}
+
+// pluginSettingsController owns plugin catalogs, selection, search, filters,
+// detail tabs, operation state, and editable settings forms. App coordinates
+// cross-domain work through UI-thread transactions.
 type pluginSettingsController struct {
 	deps CommonDeps
 
@@ -63,11 +68,14 @@ type pluginSettingsController struct {
 	pluginOperation      string
 	pluginOperationError string
 	pluginUninstallArmed string
+	settingAction        pluginSettingActionState
 	memoryRevision       uint64
+	// settingSaveRevisions prevents an earlier definition refresh from reverting a later save of the same plugin.
+	settingSaveRevisions map[string]uint64
 }
 
 func newPluginSettingsController(deps CommonDeps) *pluginSettingsController {
-	return &pluginSettingsController{deps: deps}
+	return &pluginSettingsController{deps: deps, settingSaveRevisions: make(map[string]uint64)}
 }
 
 func (c *pluginSettingsController) Plugins() []pluginSettingsPlugin {
@@ -344,10 +352,7 @@ func loadPluginSettingsPlugins(ctx context.Context, service contract.PluginCatal
 		return nil, err
 	}
 	sort.SliceStable(plugins, func(i, j int) bool {
-		if !store && plugins[i].IsSystem != plugins[j].IsSystem {
-			return plugins[i].IsSystem
-		}
-		return strings.ToLower(plugins[i].Name) < strings.ToLower(plugins[j].Name)
+		return pluginCatalogLess(plugins[i], plugins[j], store)
 	})
 	return plugins, nil
 }
@@ -386,12 +391,13 @@ func pluginSettingsPluginsFromContract(items []contract.PluginCatalogItem) ([]pl
 		plugins[index] = pluginSettingsPlugin{
 			ID: item.ID, Name: item.Name, NameEn: item.NameEn, Description: item.Description, DescriptionEn: item.DescriptionEn,
 			Author: item.Author, Website: item.Website, Version: item.Version,
-			Runtime: item.Runtime, Entry: item.Entry, PluginDirectory: item.PluginDirectory,
+			Runtime: item.Runtime, Entry: item.Entry, PluginDirectory: item.PluginDirectory, Store: item.Store,
 			Icon:           woxImage{ImageType: item.Icon.ImageType, ImageData: item.Icon.ImageData},
 			ScreenshotURLs: append([]string(nil), item.ScreenshotURLs...), TriggerKeywords: append([]string(nil), item.TriggerKeywords...),
 			Commands: commands, SupportedOS: append([]string(nil), item.SupportedOS...), Features: features, Glances: glances,
 			IsSystem: item.IsSystem, IsDev: item.IsDev, IsInstalled: item.IsInstalled, IsDisable: item.IsDisable, IsUpgradable: item.IsUpgradable,
 			SettingDefinitions: definitions,
+			HasNativeSettings:  item.HasNativeSettings,
 			Setting: pluginSettingsData{
 				Disabled: item.Setting.Disabled, TriggerKeywords: append([]string(nil), item.Setting.TriggerKeywords...), Settings: cloneStringMap(item.Setting.Settings),
 			},
@@ -440,5 +446,6 @@ func (c *pluginSettingsController) Snapshot() pluginSettingsSnapshot {
 		PluginOperation:      c.pluginOperation,
 		PluginOperationError: c.pluginOperationError,
 		PluginUninstallArmed: c.pluginUninstallArmed,
+		PluginSettingAction:  c.settingAction,
 	}
 }

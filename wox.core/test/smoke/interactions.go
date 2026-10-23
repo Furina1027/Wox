@@ -132,6 +132,25 @@ func RestoreGeneralSettingChoice(t *testing.T, client *automationdriver.Client, 
 	RestoreSettingChoice(t, client, "/general", settingKey, previousValue)
 }
 
+// ConfigureStartPage selects fresh launch behavior and one Start Page option, restoring both settings after the case.
+func ConfigureStartPage(t *testing.T, ctx context.Context, client *automationdriver.Client, startPageOption int) {
+	t.Helper()
+	previousLaunchMode := OpenGeneralSettingsAndReadChoice(t, ctx, client, "LaunchMode")
+	freshMode := SelectSettingChoiceByIndex(t, ctx, client, "LaunchMode", 0)
+	if previousLaunchMode != freshMode {
+		t.Cleanup(func() { RestoreGeneralSettingChoice(t, client, "LaunchMode", previousLaunchMode) })
+	}
+
+	previousStartPage := OpenGeneralSettingsAndReadChoice(t, ctx, client, "StartPage")
+	selectedStartPage := SelectSettingChoiceByIndex(t, ctx, client, "StartPage", startPageOption)
+	if previousStartPage != selectedStartPage {
+		t.Cleanup(func() { RestoreGeneralSettingChoice(t, client, "StartPage", previousStartPage) })
+	}
+	if err := client.Hide(ctx); err != nil {
+		t.Fatalf("close General settings after configuring Start Page: %v", err)
+	}
+}
+
 // RestoreSettingChoice restores one shared Settings choice through its owning section.
 func RestoreSettingChoice(t *testing.T, client *automationdriver.Client, path, settingKey, previousValue string) {
 	t.Helper()
@@ -397,6 +416,14 @@ func OpenInstalledPluginSettings(t *testing.T, ctx context.Context, client *auto
 	}
 	if err := client.Perform(selectCtx, listID, woxui.AccessibilityActionActivate, ""); err != nil {
 		t.Fatalf("select installed plugin %q: %v", pluginID, err)
+	}
+	// Actions update selection before the next frame replaces the old plugin's
+	// controls. Generic IDs such as plugin-disable can still belong to that plugin.
+	if _, err := client.WaitFor(selectCtx, func(snapshot woxwidget.AutomationSnapshot) bool {
+		row, found := automationdriver.Find(snapshot, listID)
+		return found && row.Selected
+	}); err != nil {
+		t.Fatalf("wait for installed plugin %q to be selected: %v", pluginID, err)
 	}
 }
 

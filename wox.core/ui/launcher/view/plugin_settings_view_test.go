@@ -70,6 +70,22 @@ func TestPluginSettingsFilterPanelUsesAvailableWidth(t *testing.T) {
 	}
 }
 
+func TestPluginListSearchKeepsOnlyTheFilterAction(t *testing.T) {
+	list := PluginList(PluginListProps{
+		Width: 260, Height: 660, Placeholder: "Search 67 plugins",
+		FilterLabel: "Filter", FilterIcon: &woxui.Image{}, OnFilter: func() {},
+		Theme: woxcomponent.ControlTheme{Text: woxui.Color{A: 255}, SelectionBackground: woxui.Color{R: 1, G: 2, B: 3, A: 255}},
+	})
+	overlay := list.(woxwidget.Container).Child.(woxwidget.Flex).Children[0].(woxwidget.Container).Child.(woxwidget.Stack).Children[1].Child.(woxwidget.Flex)
+	if len(overlay.Children) != 3 {
+		t.Fatalf("search overlay children = %d, want spacer, filter, and trailing inset", len(overlay.Children))
+	}
+	filter := overlay.Children[1].(woxwidget.Align).Child.(woxwidget.Stateful)
+	if filter.Key != "plugin-filter" {
+		t.Fatalf("search action = %q, want filter", filter.Key)
+	}
+}
+
 func TestPluginListLoadingUsesCenteredIndicator(t *testing.T) {
 	loading := PluginList(PluginListProps{Width: 260, Height: 660, Message: "Loading"}).(woxwidget.Align)
 	if loading.Width != 260 || loading.Height != 660 || loading.Horizontal != 0.5 || loading.Vertical != 0.5 {
@@ -1051,13 +1067,13 @@ func TestPluginListSectionsUseCompactHeadersAndVariableExtent(t *testing.T) {
 	if rows.ItemCount != 4 || rows.ItemExtentAt == nil {
 		t.Fatalf("grouped list = count %d extentAt %v", rows.ItemCount, rows.ItemExtentAt != nil)
 	}
-	if got := rows.ItemExtentAt(0); got != woxcomponent.SettingsNavGroupHeight {
-		t.Fatalf("first header extent = %v, want %v", got, woxcomponent.SettingsNavGroupHeight)
+	if got := rows.ItemExtentAt(0); got != woxcomponent.SettingsNavGroupHeight+pluginListSectionTrail {
+		t.Fatalf("first header extent = %v, want %v", got, woxcomponent.SettingsNavGroupHeight+pluginListSectionTrail)
 	}
 	if got := rows.ItemExtentAt(1); got != pluginListRowHeight {
 		t.Fatalf("plugin row extent = %v, want %v", got, pluginListRowHeight)
 	}
-	wantDisabled := woxcomponent.SettingsNavGroupHeight + woxcomponent.SettingsNavGroupLead
+	wantDisabled := woxcomponent.SettingsNavGroupHeight + woxcomponent.SettingsNavGroupLead + pluginListSectionTrail
 	if got := rows.ItemExtentAt(2); got != wantDisabled {
 		t.Fatalf("following header extent = %v, want %v", got, wantDisabled)
 	}
@@ -1066,13 +1082,46 @@ func TestPluginListSectionsUseCompactHeadersAndVariableExtent(t *testing.T) {
 	if header.Role != woxui.AccessibilityRoleGroup || header.Label != "Enabled" || header.AutomationID != "plugin-list-section-enabled" {
 		t.Fatalf("enabled header = %#v", header)
 	}
-	label := header.Child.(woxwidget.Container).Child.(woxwidget.Align).Child.(woxwidget.Text)
+	headerFrame := header.Child.(woxwidget.Container)
+	if headerFrame.Padding.Bottom != pluginListSectionTrail {
+		t.Fatalf("header trail = %v, want %v", headerFrame.Padding.Bottom, pluginListSectionTrail)
+	}
+	label := headerFrame.Child.(woxwidget.Container).Child.(woxwidget.Align).Child.(woxwidget.Text)
 	if label.Value != "ENABLED" || label.Style.Size != woxcomponent.SettingsSectionTitleFontSize || label.Style.Weight != woxui.FontWeightSemibold || label.Color != secondary {
 		t.Fatalf("enabled header label = %#v", label)
 	}
 	follow := rows.ItemBuilder(2).(woxwidget.Semantics).Child.(woxwidget.Container)
-	if follow.Padding.Top != woxcomponent.SettingsNavGroupLead {
-		t.Fatalf("disabled header lead = %v, want %v", follow.Padding.Top, woxcomponent.SettingsNavGroupLead)
+	if follow.Padding.Top != woxcomponent.SettingsNavGroupLead || follow.Padding.Bottom != pluginListSectionTrail {
+		t.Fatalf("disabled header padding = %#v", follow.Padding)
+	}
+}
+
+func TestPluginListSectionHeaderShowsStoreIcon(t *testing.T) {
+	icon := &woxui.Image{}
+	secondary := woxui.Color{R: 120, G: 130, B: 140, A: 255}
+	list := PluginList(PluginListProps{
+		Width: 260, Height: 660,
+		Entries: []PluginListEntry{
+			{ID: "wox", Header: "Wox Store", HasHeaderIcon: true, HeaderIcon: icon},
+			{ID: "clipboard", Item: PluginListItem{ID: "clipboard", Name: "Clipboard"}},
+		},
+		Theme: woxcomponent.ControlTheme{TextSecondary: secondary},
+	})
+	header := pluginListLazyList(list).ItemBuilder(0).(woxwidget.Semantics)
+	if header.Label != "Wox Store" {
+		t.Fatalf("header label = %q", header.Label)
+	}
+	row := header.Child.(woxwidget.Container).Child.(woxwidget.Container).Child.(woxwidget.Align).Child.(woxwidget.Flex)
+	if row.Gap != 6 || len(row.Children) != 2 {
+		t.Fatalf("header content = %#v", row)
+	}
+	mark := row.Children[0].(woxwidget.Image)
+	if mark.Source != icon || mark.Width != PluginListSectionIconSize || mark.Height != PluginListSectionIconSize {
+		t.Fatalf("store mark = %#v", mark)
+	}
+	label := row.Children[1].(woxwidget.Text)
+	if label.Value != "WOX STORE" || label.Color != secondary {
+		t.Fatalf("store title = %#v", label)
 	}
 }
 
@@ -1088,9 +1137,41 @@ func TestPluginListKeepVisibleAccountsForSectionHeaders(t *testing.T) {
 		Theme: woxcomponent.ControlTheme{},
 	})
 	scroll := pluginListScroll(list)
-	start := woxcomponent.SettingsNavGroupHeight + pluginListRowHeight + woxcomponent.SettingsNavGroupHeight + woxcomponent.SettingsNavGroupLead
+	start := woxcomponent.SettingsNavGroupHeight + pluginListSectionTrail + pluginListRowHeight + woxcomponent.SettingsNavGroupHeight + woxcomponent.SettingsNavGroupLead + pluginListSectionTrail
 	if scroll.KeepVisible == nil || scroll.KeepVisible.Start != start || scroll.KeepVisible.End != start+pluginListRowHeight {
 		t.Fatalf("keep visible = %#v, want [%v, %v]", scroll.KeepVisible, start, start+pluginListRowHeight)
+	}
+}
+
+func TestPluginListResolvesIconsForVisibleRowsOnly(t *testing.T) {
+	const count = 40
+	entries := make([]PluginListEntry, count)
+	for index := range entries {
+		id := fmt.Sprintf("plugin-%d", index)
+		entries[index] = PluginListEntry{ID: id, Item: PluginListItem{ID: id, Name: id}}
+	}
+	preset := &woxui.Image{}
+	entries[0].Item.Icon = preset
+	resolved := map[string]int{}
+	icon := &woxui.Image{}
+	height := float32(62) + pluginListRowHeight*3
+	list := PluginList(PluginListProps{
+		Width: 260, Height: height, Entries: entries,
+		ResolveIcon: func(id string) *woxui.Image {
+			resolved[id]++
+			return icon
+		},
+		Theme: woxcomponent.ControlTheme{Text: woxui.Color{A: 255}},
+	})
+	host := woxwidget.NewHost(func(woxui.FrameInfo) woxwidget.Widget { return list })
+	host.AttachServices(translatedLabelHostServices{})
+	host.Frame(&woxui.DisplayList{}, woxui.FrameInfo{Size: woxui.Size{Width: 260, Height: height}})
+	host.Dispose()
+	if resolved["plugin-0"] != 0 {
+		t.Fatalf("preset icon was decoded %d times", resolved["plugin-0"])
+	}
+	if len(resolved) == 0 || len(resolved) >= count-1 {
+		t.Fatalf("resolved %d of %d catalog icons, want only the visible window", len(resolved), count-1)
 	}
 }
 
@@ -1101,7 +1182,7 @@ func TestPluginListOmitsVariableExtentWithoutSectionHeaders(t *testing.T) {
 		Theme:   woxcomponent.ControlTheme{},
 	}))
 	if rows.ItemExtentAt != nil {
-		t.Fatal("store catalog must keep a fixed-extent LazyList")
+		t.Fatal("a catalog without section headers must keep a fixed-extent LazyList")
 	}
 }
 

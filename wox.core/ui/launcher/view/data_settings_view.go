@@ -10,7 +10,15 @@ import (
 	woxwidget "wox/ui/widget"
 )
 
-const dataBackupOperationColumnWidth = float32(140)
+// Wide enough for Restore, Open, and Delete before leftover table space is added.
+const dataBackupOperationColumnWidth = float32(220)
+
+// Data-page error sections. Empty is a page-level message under the header.
+const (
+	dataErrorSectionStorage = "storage"
+	dataErrorSectionBackup  = "backup"
+	dataErrorSectionLogs    = "logs"
+)
 
 // DataBackup is the display data required for one backup table row.
 type DataBackup struct {
@@ -37,6 +45,7 @@ type DataSettingsLabels struct {
 	AutoBackupDescription string
 	BackupListTitle       string
 	BackupNow             string
+	BackupInProgress      string
 	BackupEmpty           string
 	BackupDate            string
 	BackupType            string
@@ -45,6 +54,9 @@ type DataSettingsLabels struct {
 	BackupTypeAuto        string
 	BackupRestore         string
 	BackupRestoreConfirm  string
+	BackupDelete          string
+	BackupDeleteConfirm   string
+	BackupDeleting        string
 	LogLevelTitle         string
 	LogLevelDescription   string
 	LogLevelInfo          string
@@ -66,17 +78,20 @@ type DataSettingsProps struct {
 	PendingLocation    string
 	AutoBackup         bool
 	Backups            []DataBackup
-	RestoreArmed       string
+	BackupRunning      bool
+	DeletingBackupID   string
 	LogLevel           string
 	ClearLogsArmed     bool
 	Error              string
-	OnOpenPath         func(string)
+	ErrorSection       string
+	OnOpenPath         func(path, section string)
 	OnChooseLocation   func()
 	OnCancelLocation   func()
 	OnConfirmLocation  func()
 	OnToggleAutoBackup func()
 	OnCreateBackup     func()
 	OnRestoreBackup    func(string)
+	OnDeleteBackup     func(string)
 	OnOpenLogLevel     func(woxui.Rect)
 	OnClearLogs        func()
 	OnOpenLog          func()
@@ -85,27 +100,75 @@ type DataSettingsProps struct {
 // DataSettingsView builds the storage, backup, and logs page without controller dependencies.
 func DataSettingsView(props DataSettingsProps) woxwidget.Widget {
 	contentWidth := SettingsPageContentWidth(props.Width)
-	children := []woxwidget.Widget{
-		woxcomponent.WoxPageHeader(woxcomponent.PageHeaderProps{
-			Title: props.Labels.Title, Description: props.Labels.Description, Width: contentWidth, Theme: props.Theme,
-		}),
-		dataSectionHeader(props, props.Labels.StorageSection, contentWidth),
-		dataStorageField(props, contentWidth),
-		dataSectionHeader(props, props.Labels.BackupSection, contentWidth),
-		dataAutoBackupField(props, contentWidth),
-		dataBackupTable(props, contentWidth),
-		dataSectionHeader(props, props.Labels.LogsSection, contentWidth),
-		dataLogLevelField(props, contentWidth),
-		dataLogActionsField(props, contentWidth),
-	}
+	var keepVisible woxwidget.Key
 	if props.Error != "" {
-		children = append(children, woxwidget.Container{Width: contentWidth, Height: 30, Padding: woxwidget.Insets{Top: 8}, Child: woxwidget.TextBlock{
-			Value: props.Error, Width: contentWidth, Height: 20, MaxLines: 1, Style: woxui.TextStyle{Size: props.Theme.Scaled(11)}, Color: props.Theme.Error,
-		}})
+		keepVisible = dataSettingsErrorKey(props)
 	}
 	return SettingsPage(SettingsPageProps{Theme: props.Theme,
-		ID: "data-settings-scroll", Width: props.Width, Height: props.Height, Children: children,
+		ID: "data-settings-scroll", Width: props.Width, Height: props.Height, Children: dataSettingsContent(props, contentWidth),
+		KeepVisibleKey: keepVisible,
 	})
+}
+
+// dataSettingsContent places each failure under the section the user just used.
+// A message after the logs block stays below the fold, so Restore looks like a no-op.
+func dataSettingsContent(props DataSettingsProps, width float32) []woxwidget.Widget {
+	children := []woxwidget.Widget{
+		woxcomponent.WoxPageHeader(woxcomponent.PageHeaderProps{
+			Title: props.Labels.Title, Description: props.Labels.Description, Width: width, Theme: props.Theme,
+		}),
+	}
+	children = appendDataSectionError(children, props, "", width)
+	children = append(children,
+		dataSectionHeader(props, props.Labels.StorageSection, width),
+		dataStorageField(props, width),
+	)
+	children = appendDataSectionError(children, props, dataErrorSectionStorage, width)
+	children = append(children,
+		dataSectionHeader(props, props.Labels.BackupSection, width),
+		dataAutoBackupField(props, width),
+		dataBackupTable(props, width),
+	)
+	children = appendDataSectionError(children, props, dataErrorSectionBackup, width)
+	children = append(children,
+		dataSectionHeader(props, props.Labels.LogsSection, width),
+		dataLogLevelField(props, width),
+		dataLogActionsField(props, width),
+	)
+	return appendDataSectionError(children, props, dataErrorSectionLogs, width)
+}
+
+func appendDataSectionError(children []woxwidget.Widget, props DataSettingsProps, section string, width float32) []woxwidget.Widget {
+	if props.Error == "" || dataErrorSectionOrPage(props.ErrorSection) != section {
+		return children
+	}
+	return append(children, dataSettingsError(props, width))
+}
+
+func dataErrorSectionOrPage(section string) string {
+	switch section {
+	case dataErrorSectionStorage, dataErrorSectionBackup, dataErrorSectionLogs:
+		return section
+	default:
+		return ""
+	}
+}
+
+func dataSettingsErrorKey(props DataSettingsProps) woxwidget.Key {
+	return woxwidget.Key("data-settings-error:" + dataErrorSectionOrPage(props.ErrorSection) + ":" + props.Error)
+}
+
+// dataSettingsError keeps a long path failure readable and is the scroll target.
+func dataSettingsError(props DataSettingsProps, width float32) woxwidget.Widget {
+	message := props.Error
+	return woxwidget.Keyed{Key: dataSettingsErrorKey(props), Child: woxwidget.Semantics{
+		AutomationID: "data-settings-error", Role: woxui.AccessibilityRoleText, Label: message, Value: message,
+		LiveRegion: woxui.AccessibilityLiveRegionPolite,
+		Child: woxwidget.Container{Width: width, Padding: woxwidget.Insets{Top: 4, Bottom: 8}, Child: woxwidget.TextBlock{
+			Value: message, Width: width, MaxLines: 3, LineHeight: props.Theme.Scaled(16),
+			Style: woxui.TextStyle{Size: props.Theme.Scaled(woxcomponent.SettingsHelpFontSize)}, Color: props.Theme.Error,
+		}},
+	}}
 }
 
 func dataSectionHeader(props DataSettingsProps, label string, width float32) woxwidget.Widget {
@@ -116,7 +179,7 @@ func dataStorageField(props DataSettingsProps, width float32) woxwidget.Widget {
 	buttons := []woxwidget.Widget{
 		dataButton(props, "data-location-open", props.Labels.Open, woxcomponent.ButtonSecondary, func() {
 			if props.OnOpenPath != nil {
-				props.OnOpenPath(props.Location)
+				props.OnOpenPath(props.Location, dataErrorSectionStorage)
 			}
 		}),
 		dataButton(props, "data-location-change", props.Labels.LocationChange, woxcomponent.ButtonSecondary, props.OnChooseLocation),
@@ -171,38 +234,151 @@ func dataBackupTable(props DataSettingsProps, width float32) woxwidget.Widget {
 	if visibleRows == 0 && strings.TrimSpace(props.Labels.BackupEmpty) != "" {
 		height += woxcomponent.SettingsControlHeight
 	}
+	backupLabel := props.Labels.BackupNow
+	if props.BackupRunning && props.Labels.BackupInProgress != "" {
+		backupLabel = props.Labels.BackupInProgress
+	}
 	return FormTableField(FormTableFieldProps{
 		ID: "data-backups", Title: props.Labels.BackupListTitle, Width: width,
-		Height: height, MaxHeight: maxHeight, InlineTitle: true, ReadOnly: true,
+		Height: height, MaxHeight: maxHeight, InlineTitle: true, ReadOnly: true, Disabled: props.BackupRunning,
 		Columns: []FormTableColumn{{Label: props.Labels.BackupDate, Width: 350}, {Label: props.Labels.BackupType, Width: 220}, {Label: props.Labels.BackupOperation, Width: dataBackupOperationColumnWidth}},
-		Rows:    rows, SecondaryLabel: props.Labels.BackupNow, EmptyLabel: props.Labels.BackupEmpty,
+		Rows:    rows, SecondaryLabel: backupLabel, EmptyLabel: props.Labels.BackupEmpty,
 		HeaderWeight: woxui.FontWeightSemibold, Theme: props.Theme, OnSecondary: props.OnCreateBackup,
 	})
 }
 
+type dataBackupConfirmState struct {
+	confirm bool
+}
+
+type dataBackupConfirmWidget struct {
+	id            string
+	backupID      string
+	label         string
+	confirmLabel  string
+	progressLabel string
+	busy          bool
+	theme         woxcomponent.ControlTheme
+	onConfirm     func(string)
+}
+
+// dataBackupRestoreButton confirms on the button itself. Pointer leave, blur, or
+// Escape returns it to Restore, matching chat delete and plugin uninstall.
+func dataBackupRestoreButton(props DataSettingsProps, backup DataBackup, rowIndex int) woxwidget.Widget {
+	return dataBackupConfirmButton(
+		fmt.Sprintf("data-backup-restore-%d", rowIndex), backup.ID,
+		props.Labels.BackupRestore, props.Labels.BackupRestoreConfirm, "", false, props.Theme, props.OnRestoreBackup,
+	)
+}
+
+// dataBackupDeleteButton confirms on the button itself before removing that backup.
+// While that backup is being removed, the label stays on the in-progress text.
+func dataBackupDeleteButton(props DataSettingsProps, backup DataBackup, rowIndex int) woxwidget.Widget {
+	return dataBackupConfirmButton(
+		fmt.Sprintf("data-backup-delete-%d", rowIndex), backup.ID,
+		props.Labels.BackupDelete, props.Labels.BackupDeleteConfirm, props.Labels.BackupDeleting,
+		props.DeletingBackupID != "" && props.DeletingBackupID == backup.ID, props.Theme, props.OnDeleteBackup,
+	)
+}
+
+// dataBackupConfirmButton arms on the first click and runs the action on the second.
+func dataBackupConfirmButton(id, backupID, label, confirmLabel, progressLabel string, busy bool, theme woxcomponent.ControlTheme, onConfirm func(string)) woxwidget.Widget {
+	return woxwidget.Stateful{
+		Key: woxwidget.Key(id + "-" + backupID), Type: (*dataBackupConfirmState)(nil),
+		Widget: dataBackupConfirmWidget{
+			id: id, backupID: backupID, label: label, confirmLabel: confirmLabel,
+			progressLabel: progressLabel, busy: busy, theme: theme, onConfirm: onConfirm,
+		},
+		CreateState: func() woxwidget.State { return &dataBackupConfirmState{} },
+	}
+}
+
+func (s *dataBackupConfirmState) InitState(_ woxwidget.StateContext, _ any) {}
+
+func (s *dataBackupConfirmState) DidUpdateWidget(_ woxwidget.StateContext, _, _ any) {}
+
+func (s *dataBackupConfirmState) Dispose() {}
+
+func (s *dataBackupConfirmState) Build(context woxwidget.StateContext, widget any) woxwidget.Widget {
+	props := widget.(dataBackupConfirmWidget)
+	label := props.label
+	theme := props.theme
+	var weight woxui.FontWeight
+	if props.busy {
+		if props.progressLabel != "" {
+			label = props.progressLabel
+		}
+	} else if s.confirm {
+		label = props.confirmLabel
+		weight = woxui.FontWeightSemibold
+		if theme.Warning.A != 0 {
+			theme.Text = theme.Warning
+		}
+	}
+	clear := func() {
+		if s.confirm {
+			context.SetState(func() { s.confirm = false })
+		}
+	}
+	return woxcomponent.WoxButton(woxcomponent.ButtonProps{
+		ID: props.id, Label: label, FontWeight: weight, Disabled: props.busy,
+		Padding: woxwidget.Insets{Left: 4, Right: 4}, FontSize: woxcomponent.TableBodyFontSize, Variant: woxcomponent.ButtonText,
+		OnTap: func() {
+			if props.busy {
+				return
+			}
+			confirmed := false
+			context.SetState(func() { confirmed = s.advance() })
+			if confirmed && props.onConfirm != nil {
+				props.onConfirm(props.backupID)
+			}
+		},
+		OnHoverAt: func(inside bool, _ woxui.Rect) {
+			if !inside {
+				clear()
+			}
+		},
+		OnFocusChange: func(focused bool) {
+			if !focused {
+				clear()
+			}
+		},
+		OnKey: func(event woxui.KeyEvent) bool {
+			if event.Key != woxui.KeyEscape || !s.confirm {
+				return false
+			}
+			if event.Down {
+				clear()
+			}
+			return true
+		},
+		Theme: theme,
+	})
+}
+
+// advance moves from the action label to Confirm, then clears confirmation and reports the second click.
+func (s *dataBackupConfirmState) advance() bool {
+	if !s.confirm {
+		s.confirm = true
+		return false
+	}
+	s.confirm = false
+	return true
+}
+
 // dataBackupOperationCell keeps backup-specific actions inside the shared table cell.
 func dataBackupOperationCell(props DataSettingsProps, backup DataBackup, rowIndex int) woxwidget.Widget {
-	restoreLabel := props.Labels.BackupRestore
-	if props.RestoreArmed == backup.ID {
-		restoreLabel = props.Labels.BackupRestoreConfirm
-	}
 	return woxwidget.Flex{Axis: woxwidget.Horizontal, Gap: 4, CrossAxisAlignment: woxwidget.CrossAxisCenter, Children: []woxwidget.Widget{
-		woxcomponent.WoxButton(woxcomponent.ButtonProps{
-			ID: fmt.Sprintf("data-backup-restore-%d", rowIndex), Label: restoreLabel,
-			Padding: woxwidget.Insets{Left: 4, Right: 4}, FontSize: woxcomponent.TableBodyFontSize, Variant: woxcomponent.ButtonText, OnTap: func() {
-				if props.OnRestoreBackup != nil {
-					props.OnRestoreBackup(backup.ID)
-				}
-			}, Theme: props.Theme,
-		}),
+		dataBackupRestoreButton(props, backup, rowIndex),
 		woxcomponent.WoxButton(woxcomponent.ButtonProps{
 			ID: fmt.Sprintf("data-backup-open-%d", rowIndex), Label: props.Labels.Open,
 			Padding: woxwidget.Insets{Left: 4, Right: 4}, FontSize: woxcomponent.TableBodyFontSize, Variant: woxcomponent.ButtonText, OnTap: func() {
 				if props.OnOpenPath != nil {
-					props.OnOpenPath(backup.Path)
+					props.OnOpenPath(backup.Path, dataErrorSectionBackup)
 				}
 			}, Theme: props.Theme,
 		}),
+		dataBackupDeleteButton(props, backup, rowIndex),
 	}}
 }
 

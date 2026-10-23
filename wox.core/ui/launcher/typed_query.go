@@ -314,7 +314,7 @@ func fromCoreFormDefinition(item definition.PluginSettingDefinitionItem) (formDe
 	case *definition.PluginSettingValueCheckBox:
 		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip}
 	case *definition.PluginSettingValueSelect:
-		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, Suffix: value.Suffix, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip, IsMulti: value.IsMulti, Options: fromCoreSelectOptions(value.Options), Validators: fromCoreValidators(value.Validators)}
+		converted.Value = formDefinitionValue{Key: value.Key, Label: value.Label, Suffix: value.Suffix, DefaultValue: value.DefaultValue, Tooltip: value.Tooltip, IsMulti: value.IsMulti, Filterable: value.Filterable, Options: fromCoreSelectOptions(value.Options), Validators: fromCoreValidators(value.Validators)}
 	case *definition.PluginSettingValueLabel:
 		converted.Value = formDefinitionValue{Content: value.Content, Tooltip: value.Tooltip}
 	case *definition.PluginSettingValueTable:
@@ -380,7 +380,7 @@ func fromCoreSelectOptions(options []definition.PluginSettingValueSelectOption) 
 	converted := make([]formOption, len(options))
 	for index, option := range options {
 		converted[index] = formOption{
-			Label: option.Label, Value: option.Value,
+			Label: option.Label, Value: option.Value, IsSelectAll: option.IsSelectAll,
 			Icon: woxImage{ImageType: option.Icon.ImageType, ImageData: option.Icon.ImageData},
 		}
 	}

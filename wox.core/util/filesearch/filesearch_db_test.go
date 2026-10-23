@@ -10,21 +10,6 @@ import (
 	"time"
 )
 
-func TestFileSearchDBInitCreatesDirectoriesTable(t *testing.T) {
-	db, ctx := openTestFileSearchDB(t)
-
-	row := db.db.QueryRowContext(ctx, `
-		SELECT name
-		FROM sqlite_master
-		WHERE type = 'table' AND name = 'directories'
-	`)
-
-	var name string
-	if err := row.Scan(&name); err != nil {
-		t.Fatalf("expected directories table to exist: %v", err)
-	}
-}
-
 func TestFileSearchDBInitExtendsRootsTableWithFeedColumns(t *testing.T) {
 	db, ctx := openTestFileSearchDB(t)
 
@@ -65,55 +50,14 @@ func TestFileSearchDBInitExtendsRootsTableWithFeedColumns(t *testing.T) {
 	}
 }
 
-func TestFileSearchDBInitCreatesSQLiteSearchSchema(t *testing.T) {
+func TestFileSearchDBDoesNotCreateSQLFilenameIndex(t *testing.T) {
 	db, ctx := openTestFileSearchDB(t)
-
-	rows, err := db.db.QueryContext(ctx, `PRAGMA table_info(entries)`)
-	if err != nil {
-		t.Fatalf("query entries schema: %v", err)
+	var count int
+	if err := db.db.QueryRowContext(ctx, `SELECT count(*) FROM sqlite_master WHERE name = 'entries' OR name LIKE 'entries_%'`).Scan(&count); err != nil {
+		t.Fatal(err)
 	}
-	defer rows.Close()
-
-	columnNames := map[string]bool{}
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue any
-		var pk int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
-			t.Fatalf("scan entries schema: %v", err)
-		}
-		columnNames[name] = true
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate entries schema: %v", err)
-	}
-
-	for _, columnName := range []string{"entry_id", "name_key", "extension"} {
-		if !columnNames[columnName] {
-			t.Fatalf("expected entries column %q to exist", columnName)
-		}
-	}
-
-	for _, tableName := range []string{
-		"entries_bigram",
-		"entries_name_fts",
-		"entries_path_fts",
-		"entries_pinyin_full_fts",
-		"entries_initials_fts",
-	} {
-		row := db.db.QueryRowContext(ctx, `
-			SELECT name
-			FROM sqlite_master
-			WHERE name = ?
-		`, tableName)
-
-		var found string
-		if err := row.Scan(&found); err != nil {
-			t.Fatalf("expected sqlite search table %q to exist: %v", tableName, err)
-		}
+	if count != 0 {
+		t.Fatalf("retired filename tables exist: %d", count)
 	}
 }
 
@@ -189,56 +133,21 @@ func TestFileSearchDBSearchIndexSnapshotReportsTopRootsAndByteFields(t *testing.
 	if len(snapshot.TopRoots) == 0 || snapshot.TopRoots[0].RootID != rootLarge.ID {
 		t.Fatalf("expected heavier root %q to lead top roots, got %#v", rootLarge.ID, snapshot.TopRoots)
 	}
-	if snapshot.DBTotalFileBytes <= 0 {
+	if snapshot.DiskBytes <= 0 {
 		t.Fatalf("expected sqlite snapshot to report total file bytes, got %#v", snapshot)
 	}
-	if snapshot.TopRoots[0].TotalBytesEstimate <= 0 {
-		t.Fatalf("expected top root bytes estimate to be populated, got %#v", snapshot.TopRoots[0])
+	if snapshot.TopRoots[0].Docs != 2 {
+		t.Fatalf("wrong top root count: %+v", snapshot.TopRoots[0])
 	}
 
-	summary := formatSQLiteIndexSnapshotSummary("test", snapshot)
-	if !strings.Contains(summary, "db_total_file_bytes=") || !strings.Contains(summary, "total_bytes_est=") {
+	summary := formatColumnIndexSnapshotSummary("test", snapshot)
+	if !strings.Contains(summary, "disk_bytes=") || !strings.Contains(summary, "disk_bytes=") {
 		t.Fatalf("expected sqlite snapshot summary to expose byte fields, got %q", summary)
 	}
 
-	topRoots := formatSQLiteIndexTopRoots("test", snapshot)
-	if !strings.Contains(topRoots, "top_roots=[") || !strings.Contains(topRoots, "total_bytes_est=") {
+	topRoots := formatColumnIndexTopRoots("test", snapshot)
+	if !strings.Contains(topRoots, "top_roots=[") || !strings.Contains(topRoots, "disk_bytes=") {
 		t.Fatalf("expected sqlite top roots summary to expose top_roots and bytes, got %q", topRoots)
-	}
-}
-
-func TestFileSearchDBDeleteRootRemovesDirectorySnapshots(t *testing.T) {
-	db, ctx := openTestFileSearchDB(t)
-	now := time.Now().UnixMilli()
-	root := RootRecord{
-		ID:        "root-delete",
-		Path:      filepath.Join(t.TempDir(), "root-delete"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, root)
-
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, "/tmp/root", root.ID, "/", root.UpdatedAt, true)
-	if err != nil {
-		t.Fatalf("insert directory snapshot: %v", err)
-	}
-
-	if err := db.DeleteRoot(ctx, root.ID); err != nil {
-		t.Fatalf("delete root: %v", err)
-	}
-
-	row := db.db.QueryRowContext(ctx, `SELECT count(*) FROM directories WHERE root_id = ?`, root.ID)
-	var count int
-	if err := row.Scan(&count); err != nil {
-		t.Fatalf("count directory snapshots: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected directory snapshots to be deleted, got %d", count)
 	}
 }
 
@@ -284,83 +193,6 @@ func TestFileSearchDBReplaceRootSnapshotPreservesEntryIDForExistingPath(t *testi
 
 	if firstEntryID != secondEntryID {
 		t.Fatalf("expected entry_id to stay stable across upsert, got %d then %d", firstEntryID, secondEntryID)
-	}
-}
-
-func TestFileSearchDBListDirectoriesByRootStartsEmpty(t *testing.T) {
-	db, ctx := openTestFileSearchDB(t)
-	now := time.Now().UnixMilli()
-	root := RootRecord{
-		ID:        "root-empty",
-		Path:      filepath.Join(t.TempDir(), "root-empty"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, root)
-
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories: %v", err)
-	}
-	if len(directories) != 0 {
-		t.Fatalf("expected no directories, got %d", len(directories))
-	}
-}
-
-func TestFileSearchDBListDirectoriesByRootRoundTripsRows(t *testing.T) {
-	db, ctx := openTestFileSearchDB(t)
-	now := time.Now().UnixMilli()
-	root := RootRecord{
-		ID:        "root-roundtrip",
-		Path:      filepath.Join(t.TempDir(), "root-roundtrip"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, root)
-
-	otherRoot := RootRecord{
-		ID:        "root-other",
-		Path:      filepath.Join(t.TempDir(), "root-other"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, otherRoot)
-
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?)
-	`, "/root/b", root.ID, "/root", int64(200), true,
-		"/root/a", root.ID, "/root", int64(100), false,
-		"/other/z", otherRoot.ID, "/other", int64(300), true,
-	)
-	if err != nil {
-		t.Fatalf("insert directory snapshots: %v", err)
-	}
-
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories: %v", err)
-	}
-	if len(directories) != 2 {
-		t.Fatalf("expected 2 directories, got %d", len(directories))
-	}
-
-	if directories[0].Path != "/root/a" || directories[1].Path != "/root/b" {
-		t.Fatalf("expected path-ascending order, got %q then %q", directories[0].Path, directories[1].Path)
-	}
-	if directories[0].LastScanTime != 100 || directories[1].LastScanTime != 200 {
-		t.Fatalf("expected last scan times to round-trip, got %d and %d", directories[0].LastScanTime, directories[1].LastScanTime)
-	}
-	if directories[0].Exists != false || directories[1].Exists != true {
-		t.Fatalf("expected exists flags to round-trip, got %t and %t", directories[0].Exists, directories[1].Exists)
 	}
 }
 
@@ -411,29 +243,16 @@ func TestFileSearchDBReplaceSubtreeSnapshotReplacesOnlyScopedPaths(t *testing.T)
 		},
 	)
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?)
-	`, adjacentDirectoryPath, root.ID, rootBase, now, true,
-		outsideDirectoryPath, root.ID, rootBase, now, true,
-		scopePath, root.ID, rootBase, now, false,
-	)
-	if err != nil {
-		t.Fatalf("insert directory snapshots: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, adjacentDirectoryPath, outsideDirectoryPath)
 
 	batch := SubtreeSnapshotBatch{
 		RootID:    root.ID,
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         scopePath,
-				RootID:       root.ID,
-				ParentPath:   rootBase,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       scopePath,
+				RootID:     root.ID,
+				ParentPath: rootBase,
 			},
 		},
 		Entries: []EntryRecord{
@@ -480,18 +299,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotReplacesOnlyScopedPaths(t *testing.T)
 		t.Fatalf("expected sibling entry to remain")
 	}
 
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories: %v", err)
-	}
-	if len(directories) != 3 {
-		t.Fatalf("expected three directories, got %d", len(directories))
-	}
-
-	directorySeen := map[string]bool{}
-	for _, directory := range directories {
-		directorySeen[directory.Path] = directory.Exists
-	}
+	directorySeen := columnDirectoriesForTest(t, db, root.ID)
 
 	if !directorySeen[scopePath] {
 		t.Fatalf("expected scoped directory to be replaced")
@@ -572,11 +380,9 @@ func TestFileSearchDBApplyDirectFilesJobPrunesRemovedDirectFiles(t *testing.T) {
 		RootID:    root.ID,
 		ScopePath: root.Path,
 		Directories: []DirectoryRecord{{
-			Path:         root.Path,
-			RootID:       root.ID,
-			ParentPath:   filepath.Dir(root.Path),
-			LastScanTime: now + 10,
-			Exists:       true,
+			Path:       root.Path,
+			RootID:     root.ID,
+			ParentPath: filepath.Dir(root.Path),
 		}},
 		Entries: []EntryRecord{
 			{
@@ -700,7 +506,7 @@ func TestFileSearchDBApplyDirectFilesJobStreamPrunesRemovedDirectFiles(t *testin
 	builder := NewSnapshotBuilder(newPolicyState(Policy{}))
 	builder.SetDirectFileBatchSize(1)
 
-	if _, err := db.ApplyDirectFilesJobStream(ctx, root, job, builder, nil); err != nil {
+	if _, err := db.ApplyJobStream(ctx, root, job, builder, nil); err != nil {
 		t.Fatalf("apply direct-files stream job: %v", err)
 	}
 
@@ -808,7 +614,7 @@ func TestFileSearchDBApplyDirectFilesJobStreamBulkSyncEmptyScopePreservesEntryCo
 	builder.SetDirectFileBatchSize(1)
 
 	db.BeginBulkSync()
-	if _, err := db.ApplyDirectFilesJobStream(ctx, root, job, builder, nil); err != nil {
+	if _, err := db.ApplyJobStream(ctx, root, job, builder, nil); err != nil {
 		t.Fatalf("apply direct-files stream job in bulk sync: %v", err)
 	}
 	if err := db.EndBulkSync(ctx); err != nil {
@@ -823,7 +629,7 @@ func TestFileSearchDBApplyDirectFilesJobStreamBulkSyncEmptyScopePreservesEntryCo
 		t.Fatalf("unexpected entry count after bulk direct-files stream apply: got %d want %d", got, want)
 	}
 
-	provider := NewSQLiteSearchProvider(db)
+	provider := (&columnSearchProvider{db: db})
 	results, err := provider.Search(context.Background(), SearchQuery{Raw: "alpha"}, 10)
 	if err != nil {
 		t.Fatalf("search direct-files bulk-sync entry: %v", err)
@@ -855,11 +661,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotBulkSyncEmptyScopePreservesEntryCount
 		RootID:    root.ID,
 		ScopePath: nestedPath,
 		Directories: []DirectoryRecord{{
-			Path:         nestedPath,
-			RootID:       root.ID,
-			ParentPath:   rootPath,
-			LastScanTime: now,
-			Exists:       true,
+			Path:       nestedPath,
+			RootID:     root.ID,
+			ParentPath: rootPath,
 		}},
 		Entries: []EntryRecord{
 			{
@@ -901,7 +705,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotBulkSyncEmptyScopePreservesEntryCount
 		t.Fatalf("unexpected entry count after bulk subtree replace: got %d want %d", got, want)
 	}
 
-	provider := NewSQLiteSearchProvider(db)
+	provider := (&columnSearchProvider{db: db})
 	results, err := provider.Search(context.Background(), SearchQuery{Raw: "alpha"}, 10)
 	if err != nil {
 		t.Fatalf("search bulk subtree entry: %v", err)
@@ -945,18 +749,16 @@ func TestFileSearchDBPrepareBulkSyncFullRunRootPreservesResultsAcrossDisjointSco
 	if err := db.prepareBulkSyncFullRunRoot(ctx, root.ID); err != nil {
 		t.Fatalf("prepare bulk-sync full-run root: %v", err)
 	}
-	if _, err := db.ApplyDirectFilesJobStream(ctx, root, directJob, builder, nil); err != nil {
+	if _, err := db.ApplyJobStream(ctx, root, directJob, builder, nil); err != nil {
 		t.Fatalf("apply direct-files stream job after preparing full-run root: %v", err)
 	}
 	if err := db.ReplaceSubtreeSnapshot(ctx, SubtreeSnapshotBatch{
 		RootID:    root.ID,
 		ScopePath: nestedPath,
 		Directories: []DirectoryRecord{{
-			Path:         nestedPath,
-			RootID:       root.ID,
-			ParentPath:   rootPath,
-			LastScanTime: now,
-			Exists:       true,
+			Path:       nestedPath,
+			RootID:     root.ID,
+			ParentPath: rootPath,
 		}},
 		Entries: []EntryRecord{
 			{
@@ -986,6 +788,9 @@ func TestFileSearchDBPrepareBulkSyncFullRunRootPreservesResultsAcrossDisjointSco
 	}); err != nil {
 		t.Fatalf("replace subtree after preparing full-run root: %v", err)
 	}
+	if err := db.FinalizeRootRun(ctx, root); err != nil {
+		t.Fatalf("publish full root: %v", err)
+	}
 	if err := db.EndBulkSync(ctx); err != nil {
 		t.Fatalf("end bulk sync after prepared full-run root: %v", err)
 	}
@@ -998,7 +803,7 @@ func TestFileSearchDBPrepareBulkSyncFullRunRootPreservesResultsAcrossDisjointSco
 		t.Fatalf("unexpected entry count after prepared full-run bulk sync: got %d want %d", got, want)
 	}
 
-	provider := NewSQLiteSearchProvider(db)
+	provider := (&columnSearchProvider{db: db})
 	directResults, err := provider.Search(context.Background(), SearchQuery{Raw: "top"}, 10)
 	if err != nil {
 		t.Fatalf("search prepared full-run direct file: %v", err)
@@ -1056,11 +861,9 @@ func TestFileSearchDBFinalizeRootCursorIsConservative(t *testing.T) {
 		RootID:    root.ID,
 		ScopePath: root.Path,
 		Directories: []DirectoryRecord{{
-			Path:         root.Path,
-			RootID:       root.ID,
-			ParentPath:   filepath.Dir(root.Path),
-			LastScanTime: now + 10,
-			Exists:       true,
+			Path:       root.Path,
+			RootID:     root.ID,
+			ParentPath: filepath.Dir(root.Path),
 		}},
 		Entries: []EntryRecord{
 			{
@@ -1198,11 +1001,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotsIsAtomicAcrossBatches(t *testing.T) 
 			RootID:    root.ID,
 			ScopePath: scopeA,
 			Directories: []DirectoryRecord{{
-				Path:         scopeA,
-				RootID:       root.ID,
-				ParentPath:   rootBase,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       scopeA,
+				RootID:     root.ID,
+				ParentPath: rootBase,
 			}},
 			Entries: []EntryRecord{{
 				Path:           newA,
@@ -1254,57 +1055,29 @@ func TestFileSearchDBReplaceSubtreeSnapshotsTombstonesMissingDirectories(t *test
 	}
 	mustInsertRoot(t, ctx, db, root)
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?)
-	`, removedPath, root.ID, scopePath, now, true,
-		keptPath, root.ID, scopePath, now, true,
-	)
-	if err != nil {
-		t.Fatalf("seed tombstone directories: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, removedPath, keptPath)
 
 	if err := db.ReplaceSubtreeSnapshots(ctx, []SubtreeSnapshotBatch{{
 		RootID:    root.ID,
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         scopePath,
-				RootID:       root.ID,
-				ParentPath:   rootBase,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       scopePath,
+				RootID:     root.ID,
+				ParentPath: rootBase,
 			},
 			{
-				Path:         keptPath,
-				RootID:       root.ID,
-				ParentPath:   scopePath,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       keptPath,
+				RootID:     root.ID,
+				ParentPath: scopePath,
 			},
 		},
 	}}); err != nil {
 		t.Fatalf("replace subtree snapshots with tombstone cleanup: %v", err)
 	}
 
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories after tombstone replace: %v", err)
-	}
-
-	foundRemoved := false
-	for _, directory := range directories {
-		if directory.Path != removedPath {
-			continue
-		}
-		foundRemoved = true
-		if directory.Exists {
-			t.Fatalf("expected missing directory %q to be tombstoned", removedPath)
-		}
-	}
-	if !foundRemoved {
-		t.Fatalf("expected missing directory %q to remain as tombstone", removedPath)
+	if columnDirectoriesForTest(t, db, root.ID)[removedPath] {
+		t.Fatalf("expected missing directory %q to be pruned", removedPath)
 	}
 }
 
@@ -1329,11 +1102,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotsIgnoresUpdatedAtOnlyChanges(t *testi
 		RootID:    root.ID,
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{{
-			Path:         scopePath,
-			RootID:       root.ID,
-			ParentPath:   rootPath,
-			LastScanTime: now + 1000,
-			Exists:       true,
+			Path:       scopePath,
+			RootID:     root.ID,
+			ParentPath: rootPath,
 		}},
 		Entries: []EntryRecord{sameContentLaterScan},
 	}}); err != nil {
@@ -1347,8 +1118,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotsIgnoresUpdatedAtOnlyChanges(t *testi
 	if len(entries) != 1 {
 		t.Fatalf("expected one entry after updated_at-only replace, got %#v", entries)
 	}
-	if got, want := entries[0].UpdatedAt, original.UpdatedAt; got != want {
-		t.Fatalf("expected updated_at-only change not to rewrite entry, got %d want %d", got, want)
+	// Scan timestamps are lifecycle metadata; filename columns retain file metadata only.
+	if entries[0].Mtime != original.Mtime || entries[0].Size != original.Size || entries[0].Path != original.Path {
+		t.Fatalf("scan timestamp changed file metadata: %+v", entries[0])
 	}
 }
 
@@ -1372,53 +1144,28 @@ func TestFileSearchDBReplaceSubtreeSnapshotsTombstonesMissingDirectoriesEscapesL
 	}
 	mustInsertRoot(t, ctx, db, root)
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?)
-	`, removedPath, root.ID, scopePath, now, true,
-		keptPath, root.ID, scopePath, now, true,
-		wildcardSiblingPath, root.ID, rootBase, now, true,
-		wildcardSiblingChildPath, root.ID, wildcardSiblingPath, now, true,
-	)
-	if err != nil {
-		t.Fatalf("seed wildcard tombstone directories: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, removedPath, keptPath, wildcardSiblingPath, wildcardSiblingChildPath)
 
 	if err := db.ReplaceSubtreeSnapshots(ctx, []SubtreeSnapshotBatch{{
 		RootID:    root.ID,
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         scopePath,
-				RootID:       root.ID,
-				ParentPath:   rootBase,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       scopePath,
+				RootID:     root.ID,
+				ParentPath: rootBase,
 			},
 			{
-				Path:         keptPath,
-				RootID:       root.ID,
-				ParentPath:   scopePath,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       keptPath,
+				RootID:     root.ID,
+				ParentPath: scopePath,
 			},
 		},
 	}}); err != nil {
 		t.Fatalf("replace subtree snapshots with wildcard tombstone cleanup: %v", err)
 	}
 
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories after wildcard tombstone replace: %v", err)
-	}
-
-	directorySeen := make(map[string]bool, len(directories))
-	for _, directory := range directories {
-		directorySeen[directory.Path] = directory.Exists
-	}
+	directorySeen := columnDirectoriesForTest(t, db, root.ID)
 
 	if directorySeen[removedPath] {
 		t.Fatalf("expected missing directory %q to be tombstoned", removedPath)
@@ -1434,83 +1181,6 @@ func TestFileSearchDBReplaceSubtreeSnapshotsTombstonesMissingDirectoriesEscapesL
 	}
 }
 
-func TestFileSearchDBDeleteDirectoryTombstonesRemovesExistsFalseRows(t *testing.T) {
-	db, ctx := openTestFileSearchDB(t)
-	now := time.Now().UnixMilli()
-	rootBase := filepath.Join(t.TempDir(), "root-4")
-	livePath := filepath.Join(rootBase, "live")
-	tombstonePath := filepath.Join(rootBase, "tombstone")
-	otherRootBase := filepath.Join(t.TempDir(), "root-4-other")
-	otherTombstonePath := filepath.Join(otherRootBase, "tombstone")
-	root := RootRecord{
-		ID:        "root-tombstone",
-		Path:      filepath.Join(t.TempDir(), "root-tombstone"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, root)
-
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?),
-		       (?, ?, ?, ?, ?)
-	`, livePath, root.ID, rootBase, now, true,
-		tombstonePath, root.ID, rootBase, now, false,
-	)
-	if err != nil {
-		t.Fatalf("insert directory snapshots: %v", err)
-	}
-
-	otherRoot := RootRecord{
-		ID:        "root-tombstone-other",
-		Path:      filepath.Join(t.TempDir(), "root-tombstone-other"),
-		Kind:      RootKindUser,
-		Status:    RootStatusIdle,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	mustInsertRoot(t, ctx, db, otherRoot)
-
-	_, err = db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, otherTombstonePath, otherRoot.ID, otherRootBase, now, false)
-	if err != nil {
-		t.Fatalf("insert other root directory snapshot: %v", err)
-	}
-
-	if err := db.DeleteDirectoryTombstones(ctx, root.ID); err != nil {
-		t.Fatalf("delete directory tombstones: %v", err)
-	}
-
-	directories, err := db.ListDirectoriesByRoot(ctx, root.ID)
-	if err != nil {
-		t.Fatalf("list directories: %v", err)
-	}
-	if len(directories) != 1 {
-		t.Fatalf("expected one live directory, got %d", len(directories))
-	}
-	if directories[0].Path != livePath {
-		t.Fatalf("expected live directory to remain, got %q", directories[0].Path)
-	}
-	if !directories[0].Exists {
-		t.Fatalf("expected remaining directory to be live")
-	}
-
-	otherDirectories, err := db.ListDirectoriesByRoot(ctx, otherRoot.ID)
-	if err != nil {
-		t.Fatalf("list other root directories: %v", err)
-	}
-	if len(otherDirectories) != 1 {
-		t.Fatalf("expected other root tombstone to remain, got %d", len(otherDirectories))
-	}
-	if otherDirectories[0].Path != otherTombstonePath || otherDirectories[0].Exists {
-		t.Fatalf("expected other root tombstone row to remain unchanged")
-	}
-}
-
 func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedRootIDAndLeavesDBUnchanged(t *testing.T) {
 	db, ctx := openTestFileSearchDB(t)
 	now := time.Now().UnixMilli()
@@ -1520,7 +1190,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedRootIDAndLeavesDBUnc
 	existingDirectoryPath := filepath.Join(scopePath, "existing-dir")
 	root := RootRecord{
 		ID:        "root-validation-mismatch",
-		Path:      filepath.Join(t.TempDir(), "root-validation-mismatch"),
+		Path:      rootBase,
 		Kind:      RootKindUser,
 		Status:    RootStatusIdle,
 		CreatedAt: now,
@@ -1541,13 +1211,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedRootIDAndLeavesDBUnc
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, existingDirectoryPath, root.ID, scopePath, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, existingDirectoryPath)
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1556,11 +1220,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedRootIDAndLeavesDBUnc
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(scopePath, "new-dir"),
-				RootID:       "different-root",
-				ParentPath:   scopePath,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(scopePath, "new-dir"),
+				RootID:     "different-root",
+				ParentPath: scopePath,
 			},
 		},
 		Entries: []EntryRecord{
@@ -1596,7 +1258,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsOutOfScopePathAndLeavesDBUncha
 	existingDirectoryPath := filepath.Join(scopePath, "existing-dir")
 	root := RootRecord{
 		ID:        "root-validation-out-of-scope",
-		Path:      filepath.Join(t.TempDir(), "root-validation-out-of-scope"),
+		Path:      rootBase,
 		Kind:      RootKindUser,
 		Status:    RootStatusIdle,
 		CreatedAt: now,
@@ -1617,13 +1279,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsOutOfScopePathAndLeavesDBUncha
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, existingDirectoryPath, root.ID, scopePath, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, existingDirectoryPath)
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1632,11 +1288,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsOutOfScopePathAndLeavesDBUncha
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(rootBase, "other", "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   filepath.Join(rootBase, "other"),
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(rootBase, "other", "new-dir"),
+				RootID:     root.ID,
+				ParentPath: filepath.Join(rootBase, "other"),
 			},
 		},
 		Entries: []EntryRecord{
@@ -1689,13 +1343,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsEmptyScopePathAndLeavesDBUncha
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1704,11 +1352,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsEmptyScopePathAndLeavesDBUncha
 		ScopePath: "",
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(root.Path, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   root.Path,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(root.Path, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: root.Path,
 			},
 		},
 		Entries: []EntryRecord{
@@ -1744,7 +1390,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedEntryRootIDAndLeaves
 	existingDirectoryPath := filepath.Join(scopePath, "existing-dir")
 	root := RootRecord{
 		ID:        "root-validation-entry-root",
-		Path:      filepath.Join(t.TempDir(), "root-validation-entry-root"),
+		Path:      rootBase,
 		Kind:      RootKindUser,
 		Status:    RootStatusIdle,
 		CreatedAt: now,
@@ -1765,13 +1411,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedEntryRootIDAndLeaves
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, existingDirectoryPath, root.ID, scopePath, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, existingDirectoryPath)
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1780,11 +1420,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedEntryRootIDAndLeaves
 		ScopePath: scopePath,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(scopePath, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   scopePath,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(scopePath, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: scopePath,
 			},
 		},
 		Entries: []EntryRecord{
@@ -1837,13 +1475,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsRelativeScopePathAndLeavesDBUn
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1852,11 +1484,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsRelativeScopePathAndLeavesDBUn
 		ScopePath: filepath.Join("relative", "scope"),
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(root.Path, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   root.Path,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(root.Path, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: root.Path,
 			},
 		},
 		Entries: []EntryRecord{
@@ -1909,13 +1539,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedDirectoryParentPathA
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1924,11 +1548,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedDirectoryParentPathA
 		ScopePath: root.Path,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(root.Path, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   filepath.Join(root.Path, "wrong-parent"),
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(root.Path, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: filepath.Join(root.Path, "wrong-parent"),
 			},
 		},
 		Entries: []EntryRecord{
@@ -1981,13 +1603,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedEntryParentPathAndLe
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -1996,11 +1612,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMismatchedEntryParentPathAndLe
 		ScopePath: root.Path,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(root.Path, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   root.Path,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(root.Path, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: root.Path,
 			},
 		},
 		Entries: []EntryRecord{
@@ -2063,13 +1677,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsRootScopeMismatchAndLeavesDBUn
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -2078,11 +1686,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsRootScopeMismatchAndLeavesDBUn
 		ScopePath: otherRoot.Path,
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(otherRoot.Path, "new-dir"),
-				RootID:       root.ID,
-				ParentPath:   otherRoot.Path,
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(otherRoot.Path, "new-dir"),
+				RootID:     root.ID,
+				ParentPath: otherRoot.Path,
 			},
 		},
 		Entries: []EntryRecord{
@@ -2135,13 +1741,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMissingRootAndLeavesDBUnchange
 		UpdatedAt:      now,
 	})
 
-	_, err := db.db.ExecContext(ctx, `
-		INSERT INTO directories (path, root_id, parent_path, last_scan_time, "exists")
-		VALUES (?, ?, ?, ?, ?)
-	`, filepath.Join(root.Path, "existing-dir"), root.ID, root.Path, now, true)
-	if err != nil {
-		t.Fatalf("insert existing directory snapshot: %v", err)
-	}
+	mustSeedDirectories(t, ctx, db, root.ID, filepath.Join(root.Path, "existing-dir"))
 
 	beforeEntries, beforeDirectories := snapshotRootState(t, db, ctx, root.ID)
 
@@ -2150,11 +1750,9 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMissingRootAndLeavesDBUnchange
 		ScopePath: filepath.Join(root.Path, "scope"),
 		Directories: []DirectoryRecord{
 			{
-				Path:         filepath.Join(root.Path, "scope", "new-dir"),
-				RootID:       "missing-root",
-				ParentPath:   filepath.Join(root.Path, "scope"),
-				LastScanTime: now,
-				Exists:       true,
+				Path:       filepath.Join(root.Path, "scope", "new-dir"),
+				RootID:     "missing-root",
+				ParentPath: filepath.Join(root.Path, "scope"),
 			},
 		},
 		Entries: []EntryRecord{
@@ -2181,7 +1779,7 @@ func TestFileSearchDBReplaceSubtreeSnapshotRejectsMissingRootAndLeavesDBUnchange
 	assertRootStateEqual(t, beforeEntries, afterEntries, beforeDirectories, afterDirectories)
 }
 
-func snapshotRootState(t *testing.T, db *FileSearchDB, ctx context.Context, rootID string) (map[string]EntryRecord, map[string]DirectoryRecord) {
+func snapshotRootState(t *testing.T, db *FileSearchDB, ctx context.Context, rootID string) (map[string]EntryRecord, map[string]bool) {
 	t.Helper()
 
 	entries, err := db.ListEntries(ctx)
@@ -2196,25 +1794,15 @@ func snapshotRootState(t *testing.T, db *FileSearchDB, ctx context.Context, root
 		}
 	}
 
-	directories, err := db.ListDirectoriesByRoot(ctx, rootID)
-	if err != nil {
-		t.Fatalf("list directories: %v", err)
-	}
-
-	directoryState := map[string]DirectoryRecord{}
-	for _, directory := range directories {
-		directoryState[directory.Path] = directory
-	}
-
-	return entryState, directoryState
+	return entryState, columnDirectoriesForTest(t, db, rootID)
 }
 
 func assertRootStateEqual(
 	t *testing.T,
 	beforeEntries map[string]EntryRecord,
 	afterEntries map[string]EntryRecord,
-	beforeDirectories map[string]DirectoryRecord,
-	afterDirectories map[string]DirectoryRecord,
+	beforeDirectories map[string]bool,
+	afterDirectories map[string]bool,
 ) {
 	t.Helper()
 
@@ -2228,11 +1816,15 @@ func assertRootStateEqual(
 
 func queryEntryIDByPath(t *testing.T, db *FileSearchDB, ctx context.Context, entryPath string) int64 {
 	t.Helper()
-
-	row := db.db.QueryRowContext(ctx, `SELECT entry_id FROM entries WHERE path = ?`, entryPath)
-	var entryID int64
-	if err := row.Scan(&entryID); err != nil {
-		t.Fatalf("query entry_id for %q: %v", entryPath, err)
+	entries, err := db.ListEntries(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return entryID
+	for _, entry := range entries {
+		if entry.Path == entryPath {
+			return int64(directoryEntryID(entryPath))
+		}
+	}
+	t.Fatalf("entry missing: %s", entryPath)
+	return 0
 }

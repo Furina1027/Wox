@@ -51,7 +51,7 @@ func init() {
 
 func (p *WebViewPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "2ac1b5cf-bf55-41f0-8c34-421c323be780",
+		Id:            common.WebViewPluginID,
 		Name:          "i18n:plugin_webview_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -78,7 +78,7 @@ func (p *WebViewPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 		},
@@ -252,7 +252,7 @@ func (p *WebViewPlugin) Query(ctx context.Context, query plugin.Query) plugin.Qu
 			Title:    site.Url,
 			Icon:     currentSite.Icon,
 			Score:    100,
-			ScoreKey: site.Keyword,
+			IdentityKey: site.Keyword,
 			Preview: plugin.WoxPreview{
 				PreviewType: plugin.WoxPreviewTypeWebView,
 				PreviewData: string(previewPayload),

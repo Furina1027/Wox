@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
+	"wox/network"
 )
 
 var (
@@ -36,7 +39,7 @@ func newRequest(ctx context.Context, method, url string, body io.Reader) (*http.
 
 // doRequest executes the request and handles common response processing
 func doRequest(req *http.Request) ([]byte, error) {
-	resp, err := doRequestWithClient(req, getClient(), true)
+	resp, err := doRequestWithClient(req, GetHTTPClient(req.Context()), true)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +107,7 @@ func HttpOpenWithHeaders(ctx context.Context, rawURL string, headers map[string]
 	for key, value := range headers {
 		req.Header.Set(key, value)
 	}
-	resp, err := doRequestWithClient(req, getClient(), true)
+	resp, err := doRequestWithClient(req, GetHTTPClient(req.Context()), true)
 	if err != nil {
 		return nil, err
 	}
@@ -165,33 +168,64 @@ func HttpDownloadWithProgress(ctx context.Context, url string, dest string, prog
 		return err
 	}
 
-	return httpDownloadWithClient(ctx, req, dest, progressCallback, getClient(), true)
+	return httpDownloadWithClient(ctx, req, dest, progressCallback, GetHTTPClient(ctx), true)
+}
+
+// ApplyHTTPProxy installs the current proxy switch and address on the shared client.
+// A disabled switch clears the explicit proxy immediately, even when an address is still stored.
+func ApplyHTTPProxy(ctx context.Context, enabled bool, proxyURL string) {
+	if !enabled {
+		proxyURL = ""
+	}
+	UpdateHTTPProxy(ctx, proxyURL)
 }
 
 func UpdateHTTPProxy(ctx context.Context, proxyUrl string) {
 	clientMutex.Lock()
 	defer clientMutex.Unlock()
 
-	GetLogger().Info(ctx, fmt.Sprintf("updating HTTP proxy, url: %s", proxyUrl))
-
-	transport := &http.Transport{}
-	if proxyUrl != "" {
-		proxyURL, err := url.Parse(proxyUrl)
-		if err != nil {
-			GetLogger().Error(ctx, fmt.Sprintf("failed to parse proxy url: %s", err.Error()))
+	proxyUrl = strings.TrimSpace(proxyUrl)
+	previous := httpClient
+	if proxyUrl == "" {
+		// An empty address means Wox's own proxy is off. Drop the explicit client so the
+		// next request uses the same default transport as a startup with the switch off.
+		// Keeping the previous client is why turning the switch off still dialed the old proxy.
+		if httpClient == nil {
 			return
 		}
-		transport.Proxy = http.ProxyURL(proxyURL)
+		httpClient = nil
+		GetLogger().Info(ctx, "cleared HTTP proxy")
+		closeIdleHTTPClient(previous)
+		return
 	}
 
-	httpClient = &http.Client{
-		Transport: transport,
+	proxyURL, err := url.Parse(proxyUrl)
+	if err != nil {
+		GetLogger().Error(ctx, fmt.Sprintf("failed to parse proxy url: %s", err.Error()))
+		return
 	}
+
+	GetLogger().Info(ctx, fmt.Sprintf("updating HTTP proxy, url: %s", proxyUrl))
+	httpClient = &http.Client{
+		Transport: network.Wrap(&http.Transport{Proxy: http.ProxyURL(proxyURL)}),
+	}
+	closeIdleHTTPClient(previous)
+}
+
+func closeIdleHTTPClient(client *http.Client) {
+	if client == nil || client.Transport == nil {
+		return
+	}
+	closer, ok := client.Transport.(interface{ CloseIdleConnections() })
+	if !ok {
+		return
+	}
+	closer.CloseIdleConnections()
 }
 
 func getClient() *http.Client {
 	if httpClient == nil {
-		httpClient = &http.Client{}
+		httpClient = &http.Client{Transport: network.Wrap(nil)}
 	}
 	return httpClient
 }
@@ -207,7 +241,7 @@ func GetHTTPClient(ctx context.Context) *http.Client {
 func shouldRetryWithFallback(err error) bool {
 	// Check if the error is a DNS error, see #4303
 	var dnsErr *net.DNSError
-	return errors.As(err, &dnsErr)
+	return !network.IsOffline() && errors.As(err, &dnsErr)
 }
 
 func getFallbackHTTPClient(ctx context.Context) *http.Client {
@@ -217,7 +251,7 @@ func getFallbackHTTPClient(ctx context.Context) *http.Client {
 	baseClient := getClient()
 
 	var baseTransport *http.Transport
-	switch t := baseClient.Transport.(type) {
+	switch t := network.BaseTransport(baseClient.Transport).(type) {
 	case nil:
 		baseTransport = http.DefaultTransport.(*http.Transport)
 	case *http.Transport:
@@ -235,7 +269,7 @@ func getFallbackHTTPClient(ctx context.Context) *http.Client {
 	}).DialContext
 
 	return &http.Client{
-		Transport: fallbackTransport,
+		Transport: network.Wrap(fallbackTransport),
 		Timeout:   baseClient.Timeout,
 	}
 }
@@ -261,7 +295,7 @@ func newFallbackResolver() *net.Resolver {
 	}
 }
 
-func httpDownloadWithClient(ctx context.Context, req *http.Request, dest string, progressCallback func(downloaded int64, total int64), client *http.Client, allowFallback bool) error {
+func httpDownloadWithClient(ctx context.Context, req *http.Request, dest string, progressCallback func(downloaded int64, total int64), client *http.Client, allowFallback bool) (resultErr error) {
 	resp, err := client.Do(req)
 	if err != nil {
 		if allowFallback && shouldRetryWithFallback(err) {
@@ -279,11 +313,23 @@ func httpDownloadWithClient(ctx context.Context, req *http.Request, dest string,
 		return fmt.Errorf("http download %s failed, status code: %d", req.URL, resp.StatusCode)
 	}
 
-	out, err := os.Create(dest)
+	out, err := os.CreateTemp(filepath.Dir(dest), ".wox-download-*")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	// Commit only a complete download so cancellation never destroys an existing cached resource.
+	defer func() {
+		closeErr := out.Close()
+		if resultErr == nil {
+			resultErr = closeErr
+		}
+		if resultErr == nil {
+			resultErr = os.Rename(out.Name(), dest)
+		}
+		if resultErr != nil {
+			_ = os.Remove(out.Name())
+		}
+	}()
 
 	// Get total size from Content-Length header (may be -1 if not available)
 	totalSize := resp.ContentLength

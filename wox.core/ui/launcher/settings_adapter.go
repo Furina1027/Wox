@@ -5,6 +5,8 @@ import (
 	"runtime"
 	"strings"
 
+	"wox/common/icons"
+	"wox/network"
 	"wox/setting"
 	woxcomponent "wox/ui/launcher/component"
 	launcherview "wox/ui/launcher/view"
@@ -17,6 +19,7 @@ const settingsTitleBarHeight = launcherview.SettingsTitleBarHeight
 
 func (a *App) buildSettings(frame woxui.FrameInfo) woxwidget.Widget {
 	snapshot := a.settingsSnapshot()
+	snapshot.general.Data.EnableOfflineMode = network.IsOffline()
 	snapshot.palette.DensityScale = a.densityMetrics.normalized().scale
 	items := settingItemsForSnapshot(snapshot)
 	if snapshot.row >= len(items) && len(items) > 0 {
@@ -28,7 +31,9 @@ func (a *App) buildSettings(frame woxui.FrameInfo) woxwidget.Widget {
 	pageHeight := max(float32(0), height-launcherview.SettingsPageTop(runtime.GOOS))
 	railWidth := woxcomponent.SettingsRailWidth(width)
 	var page woxwidget.Widget
-	if snapshot.tab == "plugins" {
+	if network.IsOffline() && (snapshot.tab == "cloud" || (snapshot.tab == "plugins" && snapshot.plugins.PluginsStore) || (snapshot.tab == "theme" && snapshot.theme.ThemesMode == "store")) {
+		page = launcherview.OfflineSettingsView(launcherview.OfflineSettingsProps{Width: width - railWidth, Height: pageHeight, Theme: snapshot.palette, Icon: a.imageForTint(fromCoreImage(icons.Get(icons.StatusOffline)), &snapshot.palette.TextSecondary, physicalImageSize(48, frame.Scale*snapshot.palette.Scaled(1))), Window: a.settingsNativeWindow(), Title: a.translate("i18n:ui_offline_title"), Description: a.translate("i18n:ui_offline_unavailable"), SettingsLabel: a.translate("i18n:ui_offline_open_settings"), OnSettings: func() { a.selectSettingTab("privacy") }})
+	} else if snapshot.tab == "plugins" {
 		page = a.buildPluginSettingsPage(snapshot, width-railWidth, pageHeight, frame.Scale)
 	} else if snapshot.tab == "theme" {
 		page = a.buildSettingsThemePage(snapshot, width-railWidth, pageHeight, frame.Scale)
@@ -443,6 +448,8 @@ func (a *App) settingsSectionLabel(tab, key string) string {
 	}
 	if tab == "appearance" {
 		switch key {
+		case "UseSoftwareRendering":
+			return a.translate("i18n:ui_rendering")
 		case "LangCode":
 			return a.translate("i18n:ui_general_section_language")
 		case "MaxResultCount":
@@ -461,7 +468,8 @@ func (a *App) settingsSectionLabel(tab, key string) string {
 
 func (a *App) localizedSettingItem(item settingItem) settingItem {
 	keys := map[string][2]string{
-		"EnableAutostart": {"ui_autostart", "ui_autostart_tips"}, "HideOnStart": {"ui_hide_on_start", "ui_hide_on_start_tips"},
+		"UseSoftwareRendering": {"ui_software_rendering", "ui_software_rendering_tips"},
+		"EnableAutostart":      {"ui_autostart", "ui_autostart_tips"}, "HideOnStart": {"ui_hide_on_start", "ui_hide_on_start_tips"},
 		"LaunchMode": {"ui_launch_mode", "ui_launch_mode_tips"}, "StartPage": {"ui_start_page", "ui_start_page_tips"},
 		"IgnoreHotkeysOnFullscreen": {"ui_hotkey_ignore_fullscreen", "ui_hotkey_ignore_fullscreen_tips"},
 		"HideOnLostFocus":           {"ui_hide_on_lost_focus", "ui_hide_on_lost_focus_tips"}, "UsePinYin": {"ui_use_pinyin", "ui_use_pinyin_tips"},
@@ -477,7 +485,8 @@ func (a *App) localizedSettingItem(item settingItem) settingItem {
 		"ShowScoreTail":      {"ui_debug_show_score_tail", "ui_debug_show_score_tail_tips"}, "ShowPerformanceTail": {"ui_debug_show_performance_tail", "ui_debug_show_performance_tail_tips"},
 		"ShowPerformanceTailBatch": {"ui_debug_show_performance_tail_batch", "ui_debug_show_performance_tail_batch_tips"}, "ShowPerformanceTailPluginQuery": {"ui_debug_show_performance_tail_plugin_query", "ui_debug_show_performance_tail_plugin_query_tips"},
 		"ShowPerformanceTailBackendPrepared": {"ui_debug_show_performance_tail_backend_prepared", "ui_debug_show_performance_tail_backend_prepared_tips"}, "ShowPerformanceTailUiReceived": {"ui_debug_show_performance_tail_ui_received", "ui_debug_show_performance_tail_ui_received_tips"},
-		"EnableAutoUpdate": {"ui_enable_auto_update", "ui_enable_auto_update_tips"}, "ReleaseChannel": {"ui_release_channel", "ui_release_channel_tips"},
+		"EnableOfflineMode": {"ui_offline_title", "ui_offline_description"},
+		"EnableAutoUpdate":  {"ui_enable_auto_update", "ui_enable_auto_update_tips"}, "ReleaseChannel": {"ui_release_channel", "ui_release_channel_tips"},
 	}
 	if pair, ok := keys[item.key]; ok {
 		item.title = a.translate("i18n:" + pair[0])
@@ -527,6 +536,12 @@ func (a *App) localizedSettingChoiceTooltip(key string, choice settingChoice) st
 }
 
 func (a *App) buildSettingRow(snapshot settingsSnapshot, item settingItem, index int, width float32, background woxui.Color, imageScale float32) woxwidget.Widget {
+	offlinePaused := snapshot.general.Data.EnableOfflineMode && item.key == "EnableAutoUpdate"
+	if offlinePaused {
+		item.disabled = true
+		item.value = "false"
+		item.description = a.translate("i18n:ui_offline_paused")
+	}
 	kind := "choice"
 	value := settingValueLabel(item)
 	state := woxui.TextEditingState{Text: item.value}
@@ -549,13 +564,26 @@ func (a *App) buildSettingRow(snapshot settingsSnapshot, item settingItem, index
 			valueLeading = a.imageForTint(source, &snapshot.palette.Text, physicalImageSize(18, imageScale))
 		}
 	}
+	var controlAction woxwidget.Widget
+	if item.key == "UseSoftwareRendering" && snapshot.general.Data.SoftwareRenderingRestartRequired {
+		controlAction = woxcomponent.WoxButton(woxcomponent.ButtonProps{
+			ID: "settings-restart-wox", Label: a.translate("i18n:ui_restart_wox"),
+			Variant: woxcomponent.ButtonSecondary, Disabled: snapshot.saving || snapshot.restarting,
+			OnTap: a.restartFromSettings, Theme: snapshot.palette,
+		})
+		if snapshot.restartError != "" {
+			item.description += "\n" + snapshot.restartError
+		}
+		item.disabled = item.disabled || snapshot.saving || snapshot.restarting
+	}
 	return launcherview.SettingRow(launcherview.SettingRowProps{
-		ID: item.key, Title: item.title, Description: item.description, Value: value, ValueTrailing: item.trailers[item.value], ValueLeading: valueLeading,
-		Width: width, Background: background, Disabled: item.disabled,
+		ID: item.key, Title: item.title, Description: item.description, Value: value, ControlAction: controlAction, ValueTrailing: item.trailers[item.value], ValueLeading: valueLeading,
+		Width: width, Background: background, Disabled: item.disabled, PreserveLabelColor: offlinePaused,
 		Kind: kind, ControlWidth: item.controlWidth, BrowseFile: item.browseFile, Editing: state, Focused: focused, Window: a.settingsNativeWindow(), Theme: snapshot.palette,
 		OnTap:       func() { a.selectSettingRow(index); a.openOrActivateSetting() },
 		OnChoiceTap: func(anchor woxui.Rect) { a.selectSettingRow(index); a.openSettingChoicePickerAt(item, anchor) },
 		OnFocus:     func() { a.selectSettingRow(index); a.startBuiltInSettingEdit(item, -1) },
+		OnBlur:      func() { a.blurBuiltInSettingEdit(item) },
 		OnChanged:   func(value string) { a.setBuiltInSettingEditValue(item, value) }, OnKey: a.onBuiltInSettingsEditorKey,
 		OnBrowse: func() { a.selectSettingRow(index); a.browseBuiltInSettingFile(item) },
 	})

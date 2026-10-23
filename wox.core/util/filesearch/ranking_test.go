@@ -23,7 +23,7 @@ func TestFileSearchNameMatchesRankBeforeDirectoryMatches(t *testing.T) {
 				filepath.Join("/", "home", "amigasrc", "DariusZendehRegs.png"),
 			} {
 				matched, score := scoreDocAgainstQuery(query, docRecord{Path: path})
-				if !matched || score >= nameScore {
+				if matched {
 					t.Fatalf("filename score=%d, directory match=%v score=%d path=%s", nameScore, matched, score, path)
 				}
 			}
@@ -58,15 +58,15 @@ func TestFileSearchNamePrioritySurvivesCandidateLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, raw := range []string{"amiga png", "amiga .png", `"amiga" .png`} {
-		results, err := NewSQLiteSearchProvider(db).Search(ctx, SearchQuery{Raw: raw, DisablePinyin: true}, 10)
+		results, err := (&columnSearchProvider{db: db}).Search(ctx, SearchQuery{Raw: raw, DisablePinyin: true}, 10)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if len(results) == 0 || results[0].Path != target {
 			t.Fatalf("%q: filename did not rank first: %v", raw, results)
 		}
-		if len(results) < 2 {
-			t.Fatalf("%q: directory matches should remain available", raw)
+		if len(results) != 1 {
+			t.Fatalf("%q: implicit parent matches must be excluded", raw)
 		}
 	}
 }
@@ -89,14 +89,69 @@ func TestFileSearchNamePriorityPreservesOtherMatchModes(t *testing.T) {
 		query := normalizeSearchQuery(SearchQuery{Raw: "ceshi png", DisablePinyin: disabled})
 		nameMatched, nameScore := scoreDocAgainstQuery(query, chinese)
 		pathMatched, pathScore := scoreDocAgainstQuery(query, directory)
-		if !pathMatched {
-			t.Fatal("directory match lost")
+		if pathMatched {
+			t.Fatal("implicit directory match leaked")
 		}
 		if disabled && nameMatched {
 			t.Fatal("disabled pinyin still matched")
 		}
 		if !disabled && (!nameMatched || nameScore <= pathScore) {
 			t.Fatalf("filename pinyin should rank first: %v %d vs %d", nameMatched, nameScore, pathScore)
+		}
+	}
+}
+
+// TestFileSearchShorterNamesAndPathsRankFirstOnEqualScore verifies that equal-score
+// matches prefer directories, then shorter names, then shorter paths.
+func TestFileSearchShorterNamesAndPathsRankFirstOnEqualScore(t *testing.T) {
+	db, ctx := openTestFileSearchDB(t)
+	now := time.Now().UnixMilli()
+	rootPath := filepath.Join(t.TempDir(), "root")
+	root := RootRecord{ID: "short-path-ranking", Path: rootPath, Kind: RootKindUser, Status: RootStatusIdle, CreatedAt: now, UpdatedAt: now}
+	mustInsertRoot(t, ctx, db, root)
+
+	var entries []EntryRecord
+	add := func(path string, dir bool) {
+		entries = append(entries, EntryRecord{
+			Path:       path,
+			RootID:     root.ID,
+			ParentPath: filepath.Dir(path),
+			Name:       filepath.Base(path),
+			IsDir:      dir,
+			Mtime:      now,
+			UpdatedAt:  now,
+		})
+	}
+
+	deepLyrics := filepath.Join(rootPath, "AppData", "Roaming", "Tencent", "QQMusic", "QQMusicCache", "QQMusicLyricNew", "陈慧娴 - 千千阕歌 - 301 - 永远是你的朋友_qm.qrc")
+	folder := filepath.Join(rootPath, "StartMenu", "QQ音乐")
+	shortcut := filepath.Join(rootPath, "StartMenu", "QQ音乐.lnk")
+	iconShort := filepath.Join(rootPath, "icons", "QQ音乐.png")
+	iconDeep := filepath.Join(rootPath, "AppData", "Roaming", "icons", "QQ音乐.png")
+
+	for _, p := range []string{filepath.Dir(deepLyrics), folder, filepath.Dir(iconShort), filepath.Dir(iconDeep)} {
+		add(p, true)
+	}
+	add(deepLyrics, false)
+	add(shortcut, false)
+	add(iconDeep, false)
+	add(iconShort, false)
+
+	if err := db.ReplaceRootEntries(ctx, root, entries, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := (&columnSearchProvider{db: db}).Search(ctx, SearchQuery{Raw: "qqyy"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) < 5 {
+		t.Fatalf("expected at least 5 results, got %v", results)
+	}
+	wantOrder := []string{folder, shortcut, iconShort, iconDeep, deepLyrics}
+	for i, want := range wantOrder {
+		if results[i].Path != want {
+			t.Fatalf("result[%d] = %q, want %q (all=%v)", i, results[i].Path, want, results)
 		}
 	}
 }

@@ -17,6 +17,13 @@ func TestOpenAsAdministratorRejectsInvalidPath(t *testing.T) {
 	}
 }
 
+func TestOpenWithOwnerRejectsInvalidPath(t *testing.T) {
+	err := OpenWithOwner("invalid\x00path", 0x1234)
+	if err == nil || !strings.Contains(err.Error(), "encode ShellExecute path") {
+		t.Fatalf("invalid owner-aware launch error = %v", err)
+	}
+}
+
 func TestRunElevatedRejectsInvalidPath(t *testing.T) {
 	_, err := RunElevated("invalid\x00path.exe", "-Command echo", "")
 	if err == nil {
@@ -46,6 +53,11 @@ func TestShellExecuteMaskUsesContextMenuForNamespaceObjects(t *testing.T) {
 	fileMask := shellExecuteMask(`C:\Apps\Editor.exe`)
 	if fileMask&seeMaskInvokeIDList != 0 {
 		t.Fatal("expected filesystem path to preserve direct Shell execution")
+	}
+
+	panelMask := shellExecuteMask(`::{26EE0668-A00A-44D7-9371-BEB064C98683}\0\{F82DF8F7-8B9F-442E-A48C-818EA735FF9B}`)
+	if panelMask&seeMaskInvokeIDList == 0 {
+		t.Fatal("expected Control Panel parsing name to use SEE_MASK_INVOKEIDLIST")
 	}
 }
 

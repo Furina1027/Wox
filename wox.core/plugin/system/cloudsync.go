@@ -42,7 +42,7 @@ type CloudSyncPlugin struct {
 // GetMetadata declares the local query surface for cloud sync status and manual sync.
 func (p *CloudSyncPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "8867b6af-dc86-45d5-bcc3-32966adcee27",
+		Id:            common.CloudSyncPluginID,
 		Name:          "i18n:plugin_cloudsync_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -217,14 +217,15 @@ func (p *CloudSyncPlugin) historyResults(ctx context.Context, query plugin.Query
 	for index, record := range records {
 		recordID := record.ID
 		results = append(results, plugin.QueryResult{
-			Id:         fmt.Sprintf("cloudsync-history-%d", record.ID),
-			Title:      p.historyTitle(ctx, record),
-			SubTitle:   p.historySubtitle(ctx, record),
-			Icon:       p.historyIcon(record),
-			Score:      cloudSyncHistoryGroupScore - int64(index),
-			Group:      "i18n:plugin_cloudsync_history_group",
-			GroupScore: cloudSyncHistoryGroupScore,
-			Tails:      p.historyTails(ctx, record),
+			Id:          fmt.Sprintf("cloudsync-history-%d", record.ID),
+			IdentityKey: fmt.Sprintf("cloudsync:history:%d", record.ID),
+			Title:       p.historyTitle(ctx, record),
+			SubTitle:    p.historySubtitle(ctx, record),
+			Icon:        p.historyIcon(record),
+			Score:       cloudSyncHistoryGroupScore - int64(index),
+			Group:       "i18n:plugin_cloudsync_history_group",
+			GroupScore:  cloudSyncHistoryGroupScore,
+			Tails:       p.historyTails(ctx, record),
 			Actions: []plugin.QueryResultAction{
 				{
 					Name:                   "i18n:plugin_cloudsync_history_action_view_details",
@@ -288,14 +289,15 @@ func (p *CloudSyncPlugin) historyDetailResults(ctx context.Context, historyID ui
 	results := make([]plugin.QueryResult, 0, len(sortedDetails))
 	for index, detail := range sortedDetails {
 		result := plugin.QueryResult{
-			Id:         fmt.Sprintf("cloudsync-history-%d-detail-%d", historyID, index),
-			Title:      p.historyDetailTitle(ctx, detail),
-			SubTitle:   p.historyDetailSubtitle(ctx, detail),
-			Icon:       p.historyIcon(*record),
-			Score:      cloudSyncHistoryDetailScore - int64(index),
-			Group:      "i18n:plugin_cloudsync_history_detail_group",
-			GroupScore: cloudSyncHistoryGroupScore,
-			Tails:      p.historyDetailTails(ctx, detail),
+			Id:          fmt.Sprintf("cloudsync-history-%d-detail-%d", historyID, index),
+			IdentityKey: fmt.Sprintf("cloudsync:history:%d:%s:%s:%s", historyID, detail.EntityType, detail.PluginID, detail.Key),
+			Title:       p.historyDetailTitle(ctx, detail),
+			SubTitle:    p.historyDetailSubtitle(ctx, detail),
+			Icon:        p.historyIcon(*record),
+			Score:       cloudSyncHistoryDetailScore - int64(index),
+			Group:       "i18n:plugin_cloudsync_history_detail_group",
+			GroupScore:  cloudSyncHistoryGroupScore,
+			Tails:       p.historyDetailTails(ctx, detail),
 		}
 		if detail.Status == cloudsync.CloudSyncHistoryStatusFailed && detail.Error != "" {
 			errorText := detail.Error
@@ -537,6 +539,8 @@ func (p *CloudSyncPlugin) historyReasonLabel(ctx context.Context, reason string)
 		return p.tr(ctx, "plugin_cloudsync_history_reason_tick")
 	case "bootstrap":
 		return p.tr(ctx, "plugin_cloudsync_history_reason_bootstrap")
+	case cloudsync.RestoreBackupPushReason:
+		return p.tr(ctx, "plugin_cloudsync_history_reason_restore_backup")
 	case "done":
 		return p.tr(ctx, "plugin_cloudsync_history_reason_shutdown")
 	default:

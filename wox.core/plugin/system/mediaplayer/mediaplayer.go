@@ -27,7 +27,7 @@ var mediaIcon = icons.Get(icons.PluginMediaPlayer)
 
 const (
 	// PluginID identifies the built-in media player plugin for internal plugin tools.
-	PluginID = "b8f3d4e5-6c7a-4b9c-8d1e-2f3a4b5c6d7e"
+	PluginID = common.MediaPlayerPluginID
 
 	ToolGetStatus = "get_status"
 	ToolPlay      = "play"
@@ -130,7 +130,7 @@ func (m *MediaPlayerPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 		},
@@ -332,7 +332,7 @@ func (m *MediaPlayerPlugin) buildMediaResult(mediaInfo *MediaInfo, showOpenMedia
 		Title:    mediaInfo.Title,
 		SubTitle: m.formatSubTitle(mediaInfo),
 		Icon:     m.formatIcon(mediaInfo),
-		ScoreKey: mediaMRUScoreKey(mediaInfo),
+		IdentityKey: mediaMRUIdentityKey(mediaInfo),
 		Preview:  m.formatPreview(mediaInfo),
 		Tails:    plugin.NewQueryResultTailTexts(m.formatProgress(mediaInfo)),
 		Actions:  attachMediaMRUContext(actions, mediaInfo),
@@ -694,7 +694,7 @@ func (m *MediaPlayerPlugin) refreshMediaPlayer(ctx context.Context) {
 	}
 }
 
-func mediaMRUScoreKey(mediaInfo *MediaInfo) string {
+func mediaMRUIdentityKey(mediaInfo *MediaInfo) string {
 	return strings.Join([]string{mediaInfo.AppName, mediaInfo.Title, mediaInfo.Artist}, "\x1f")
 }
 

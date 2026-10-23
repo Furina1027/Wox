@@ -10,6 +10,7 @@ import (
 	"sync"
 	"wox/common"
 	"wox/common/icons"
+	"wox/internal/assetfs"
 	"wox/plugin"
 	"wox/plugin/system"
 	"wox/setting"
@@ -31,7 +32,9 @@ var (
 )
 
 //go:embed emoji-data.json
-var emojiFS embed.FS
+var rawEmojiFS embed.FS
+
+var emojiFS = assetfs.New(rawEmojiFS)
 
 func init() {
 	plugin.AllSystemPlugin = append(plugin.AllSystemPlugin, &EmojiPlugin{})
@@ -39,7 +42,6 @@ func init() {
 
 type EmojiData struct {
 	Emoji       string
-	Codes       string
 	Categories  map[string]string // language code -> category name
 	Names       map[string]string // language code -> emoji name
 	SearchTerms []string
@@ -97,7 +99,6 @@ func loadEmojiCatalog() ([]EmojiData, error) {
 
 				entries = append(entries, EmojiData{
 					Emoji:       char,
-					Codes:       emoji.Get("codes").String(),
 					Categories:  categoryNames,
 					Names:       names,
 					SearchTerms: emojisearch.BuildTerms(names, categoryNames),
@@ -129,7 +130,7 @@ type EmojiPlugin struct {
 
 func (e *EmojiPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "a5c7d25d-7a3b-4c45-8bd4-6e2d2c2f9e3a",
+		Id:            common.EmojiPluginID,
 		Name:          "i18n:plugin_emoji_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -175,7 +176,7 @@ func (e *EmojiPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 		},
@@ -321,7 +322,7 @@ func (e *EmojiPlugin) createEmojiResult(ctx context.Context, query plugin.Query,
 		Title:    title,
 		SubTitle: subTitle,
 		Icon:     common.NewWoxImageEmoji(emoji),
-		ScoreKey: emoji,
+		IdentityKey: emoji,
 		Actions:  attachEmojiMRUContext(e.buildEmojiActions(ctx, query, emoji, isFrequentlyUsed), emoji),
 	}
 }

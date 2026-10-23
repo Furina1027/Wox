@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 	"wox/database"
-	"wox/diagnostic"
 	"wox/setting"
+	"wox/supervisor"
 	"wox/util"
 	"wox/util/shell"
 )
@@ -37,6 +37,8 @@ type PreservedSettings struct {
 	SelectionHotkey           string             `json:"selection_hotkey"`
 	ActionPanelHotkey         string             `json:"action_panel_hotkey,omitempty"`
 	UiDensity                 string             `json:"ui_density"`
+	UseSoftwareRendering      bool               `json:"use_software_rendering"`
+	EnableOfflineMode         bool               `json:"enable_offline_mode"`
 	EnableAnonymousUsageStats bool               `json:"enable_anonymous_usage_stats"`
 	EnableGlance              *bool              `json:"enable_glance,omitempty"`
 	PrimaryGlance             *setting.GlanceRef `json:"primary_glance,omitempty"`
@@ -135,6 +137,8 @@ func ApplyPreservedSettings(woxSetting *setting.WoxSetting) error {
 
 	preserved := profile.PreservedSettings
 	var applyErrors []error
+	applyErrors = appendIfError(applyErrors, woxSetting.EnableOfflineMode.SetLocal(preserved.EnableOfflineMode))
+	applyErrors = appendIfError(applyErrors, woxSetting.UseSoftwareRendering.SetLocal(preserved.UseSoftwareRendering))
 	if preserved.LangCode != "" {
 		applyErrors = appendIfError(applyErrors, woxSetting.LangCode.SetFromString(preserved.LangCode))
 	}
@@ -213,7 +217,7 @@ func RunCleanupProcess(args []string) int {
 	}
 	parentPID, _ := strconv.Atoi(args[2])
 	deadline := time.Now().Add(30 * time.Second)
-	for diagnostic.IsProcessRunning(parentPID) && time.Now().Before(deadline) {
+	for supervisor.IsProcessRunning(parentPID) && time.Now().Before(deadline) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	for time.Now().Before(deadline) {
@@ -239,6 +243,8 @@ func captureSettings(woxSetting *setting.WoxSetting) PreservedSettings {
 		ActionPanelHotkey:         woxSetting.ActionPanelHotkey.Get(),
 		UiDensity:                 string(woxSetting.UiDensity.Get()),
 		EnableAnonymousUsageStats: woxSetting.EnableAnonymousUsageStats.Get(),
+		UseSoftwareRendering:      woxSetting.UseSoftwareRendering.Get(),
+		EnableOfflineMode:         woxSetting.EnableOfflineMode.Get(),
 		EnableGlance:              &enableGlance,
 		PrimaryGlance:             &primaryGlance,
 		HideGlanceIcon:            &hideGlanceIcon,

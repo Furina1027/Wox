@@ -44,7 +44,7 @@ type FSEventsChangeFeed struct {
 	streamGeneration uint64
 	roots            []RootRecord
 	rootMatcher      rootPathMatcher
-	signals          chan ChangeSignal
+	signalQueue      *changeSignalQueue
 	handle           cgo.Handle
 	handlePtr        *C.uintptr_t
 	closed           bool
@@ -66,8 +66,13 @@ type FSEventsChangeFeed struct {
 }
 
 func NewFSEventsChangeFeed() *FSEventsChangeFeed {
+	return newFSEventsChangeFeed(fseventsSignalBufferSize)
+}
+
+// newFSEventsChangeFeed sizes the shared queue per stream, never per directory.
+func newFSEventsChangeFeed(bufferSize int) *FSEventsChangeFeed {
 	feed := &FSEventsChangeFeed{
-		signals: make(chan ChangeSignal, fseventsSignalBufferSize),
+		signalQueue: newChangeSignalQueue(bufferSize),
 	}
 	feed.handle = cgo.NewHandle(feed)
 	feed.handlePtr = (*C.uintptr_t)(C.malloc(C.size_t(unsafe.Sizeof(C.uintptr_t(0)))))
@@ -80,7 +85,7 @@ func (f *FSEventsChangeFeed) Mode() string {
 }
 
 func (f *FSEventsChangeFeed) Signals() <-chan ChangeSignal {
-	return f.signals
+	return f.signalQueue.Signals()
 }
 
 func (f *FSEventsChangeFeed) Refresh(ctx context.Context, roots []RootRecord) error {
@@ -88,6 +93,10 @@ func (f *FSEventsChangeFeed) Refresh(ctx context.Context, roots []RootRecord) er
 	prepared := prepareFSEventsRefresh(roots, time.Now(), defaultFeedCursorSafeWindow)
 	f.mu.Lock()
 	keepCurrentStream := !f.closed && f.stream != nil && sameFSEventsWatchRoots(f.roots, prepared.watchRoots)
+	if keepCurrentStream {
+		f.roots = append([]RootRecord(nil), prepared.watchRoots...)
+		f.rootMatcher = newRootPathMatcher(prepared.watchRoots)
+	}
 	f.mu.Unlock()
 	if keepCurrentStream {
 		// Bug fix: full-scan completion and the later maintenance-index callback
@@ -187,6 +196,7 @@ func (f *FSEventsChangeFeed) Close() error {
 		return nil
 	}
 	f.closed = true
+	f.signalQueue.close()
 	f.mu.Unlock()
 
 	f.stopCurrentStream("close")
@@ -310,15 +320,11 @@ func (f *FSEventsChangeFeed) emit(signal ChangeSignal) {
 		return
 	}
 
-	select {
-	case f.signals <- signal:
-		if fileSearchDiagnosticLoggingEnabled {
-			f.logSignalSummary(signal, false)
-		}
-	default:
-		if fileSearchDiagnosticLoggingEnabled {
-			f.logSignalSummary(signal, true)
-		}
+	delivered := f.signalQueue.offer(signal)
+	if fileSearchDiagnosticLoggingEnabled {
+		f.logSignalSummary(signal, !delivered)
+	}
+	if !delivered {
 		f.logDroppedSignal(signal)
 	}
 }
@@ -333,9 +339,9 @@ func (f *FSEventsChangeFeed) logDroppedSignal(signal ChangeSignal) {
 		return
 	}
 
-	// Diagnostic logging: a full signal channel means the watcher has lost a
-	// concrete file event. Aggregate the warning so a filesystem burst still
-	// points at the failure boundary without flooding the log.
+	// Diagnostic logging: a full signal channel means the root now waits for a
+	// history recovery. Aggregate the warning so a filesystem burst still points
+	// at the failure boundary without flooding the log.
 	dropped := f.channelFullDroppedSignalCount
 	f.channelFullDroppedSignalCount = 0
 	f.lastDroppedSignalLog = now
@@ -436,8 +442,8 @@ func (f *FSEventsChangeFeed) logSignalSummary(signal ChangeSignal, dropped bool)
 		"filesearch fsevents emit summary: emitted=%d dropped=%d channel_len=%d channel_cap=%d kind=%s semantic=%s root=%s path=%s",
 		emitted,
 		droppedCount,
-		len(f.signals),
-		cap(f.signals),
+		len(f.signalQueue.signals),
+		cap(f.signalQueue.signals),
 		signal.Kind,
 		signal.SemanticKind,
 		signal.RootID,
@@ -472,9 +478,6 @@ func (f *FSEventsChangeFeed) onEvents(paths []string, flags []uint64, ids []uint
 			// only to the longest matching root so a promoted dynamic root does not
 			// also wake its parent and lose the intended narrow reconcile boundary.
 			matchedRoots = append(matchedRoots, root)
-		}
-		if len(matchedRoots) == 0 && fseventRequiresRootReconcile(flags[index]) {
-			matchedRoots = roots
 		}
 		if diagnosticLoggingEnabled && len(matchedRoots) == 0 {
 			unmatchedEventCount++
@@ -544,4 +547,18 @@ func woxFSEventsCallback(handle C.uintptr_t, numEvents C.size_t, eventPaths **C.
 	}
 
 	feed.onEvents(paths, flags, ids)
+}
+
+// AcknowledgeRoot replaces the cached durable cursor without restarting the stream.
+func (f *FSEventsChangeFeed) AcknowledgeRoot(root RootRecord) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := range f.roots {
+		if f.roots[i].ID == root.ID {
+			// Finalization is serialized by the scanner. Accept an explicit
+			// root recovery boundary even after native event IDs have wrapped.
+			f.roots[i].FeedCursor = root.FeedCursor
+		}
+	}
+	f.rootMatcher = newRootPathMatcher(f.roots)
 }

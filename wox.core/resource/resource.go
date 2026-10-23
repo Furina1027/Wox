@@ -10,29 +10,41 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"wox/internal/assetfs"
 	"wox/util"
 )
 
 //go:embed hosts
-var HostFS embed.FS
+var rawHostFS embed.FS
+
+var HostFS = assetfs.New(rawHostFS)
 
 //go:embed lang
-var LangFS embed.FS
+var rawLangFS embed.FS
+
+var LangFS = assetfs.New(rawLangFS)
 
 //go:embed themes
-var ThemeFS embed.FS
+var rawThemeFS embed.FS
 
-//go:embed app.png
-var appIcon []byte
+var ThemeFS = assetfs.New(rawThemeFS)
 
-//go:embed app.ico
-var appIconWindows []byte
+//go:embed app.png app.ico
+var rawIconFS embed.FS
+
+var iconFS = assetfs.New(rawIconFS)
+var appIcon = iconFS.MustReadFile("app.png")
+var appIconWindows = iconFS.MustReadFile("app.ico")
 
 //go:embed others
-var OthersFS embed.FS
+var rawOthersFS embed.FS
+
+var OthersFS = assetfs.New(rawOthersFS)
 
 //go:embed plugin_templates
-var PluginTemplatesFS embed.FS
+var rawPluginTemplatesFS embed.FS
+
+var PluginTemplatesFS = assetfs.New(rawPluginTemplatesFS)
 
 var embedThemes = []string{}
 
@@ -47,7 +59,8 @@ func Extract(ctx context.Context) error {
 			return rmErr
 		}
 	}
-	extractHostErr := extractFiles(ctx, HostFS, hostDirectory, "hosts", false)
+
+	extractHostErr := extractFiles(ctx, HostFS, hostDirectory, "hosts", true)
 	if extractHostErr != nil {
 		return extractHostErr
 	}
@@ -82,7 +95,7 @@ func Extract(ctx context.Context) error {
 	return nil
 }
 
-func extractFiles(ctx context.Context, fs embed.FS, extractDirectory string, filePath string, recursive bool) error {
+func extractFiles(ctx context.Context, fs assetfs.FS, extractDirectory string, filePath string, recursive bool) error {
 	dir, err := fs.ReadDir(filePath)
 	if err != nil {
 		return err

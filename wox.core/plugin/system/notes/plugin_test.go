@@ -68,7 +68,7 @@ func TestPluginQueryRoutesListNewSearchAndDeleted(t *testing.T) {
 	}
 }
 
-func TestNoteResultsShowTitleAndUpdatedAtTail(t *testing.T) {
+func TestNoteResultsShowTitleAndUpdatedAtSubtitle(t *testing.T) {
 	repository, _ := newRepositoryForTest(t)
 	p := &Plugin{repository: repository}
 	created, err := repository.Create()
@@ -87,12 +87,37 @@ func TestNoteResultsShowTitleAndUpdatedAtTail(t *testing.T) {
 	if result.Title != "Roadmap" {
 		t.Fatalf("note result title = %q", result.Title)
 	}
-	if result.SubTitle != "" {
-		t.Fatalf("note result should omit subtitle, got %q", result.SubTitle)
+	if result.SubTitle != util.FormatTimestamp(saved.UpdatedAt) {
+		t.Fatalf("note result subtitle = %q", result.SubTitle)
 	}
-	wantTail := util.FormatTimestamp(saved.UpdatedAt)
-	if len(result.Tails) != 1 || result.Tails[0].Text != wantTail {
-		t.Fatalf("note result tail = %#v, want %q", result.Tails, wantTail)
+	if len(result.Tails) != 0 {
+		t.Fatalf("note result tail = %#v", result.Tails)
+	}
+	if result.Preview.PreviewType != plugin.WoxPreviewTypeMarkdown || result.Preview.DefaultHidden {
+		t.Fatalf("note preview = %#v, want open markdown", result.Preview)
+	}
+	if !strings.Contains(result.Preview.PreviewData, "Roadmap") || !strings.Contains(result.Preview.PreviewData, "more body") {
+		t.Fatalf("note preview data = %q", result.Preview.PreviewData)
+	}
+}
+
+func TestNoteResultPreviewRewritesLocalImages(t *testing.T) {
+	previous := util.GetLocation().GetUserDataDirectory()
+	util.GetLocation().UpdateUserDataDirectory(t.TempDir())
+	t.Cleanup(func() { util.GetLocation().UpdateUserDataDirectory(previous) })
+
+	document := common.NoteDocument{Blocks: []common.NoteBlock{
+		{Text: "Shot"},
+		{Type: common.NoteBlockImage, Image: &common.NoteImage{ID: "abc.png", FileName: "capture.png", Scale: 60}},
+		{Type: common.NoteBlockImage, Image: &common.NoteImage{URL: "https://example.com/remote.png", FileName: "remote.png"}},
+	}}
+	markdown := noteResultPreviewMarkdown(document)
+	wantPath := filepath.ToSlash(ResolveNoteImagePath(common.NoteImage{ID: "abc.png"}))
+	if strings.Contains(markdown, "notes-image:") || strings.Contains(markdown, "scale=") || !strings.Contains(markdown, wantPath) {
+		t.Fatalf("local image preview = %q, want %s", markdown, wantPath)
+	}
+	if !strings.Contains(markdown, "https://example.com/remote.png") {
+		t.Fatalf("remote image preview = %q", markdown)
 	}
 }
 
@@ -311,7 +336,7 @@ func TestNotesMetadataEnablesMRU(t *testing.T) {
 		t.Fatal("notes plugin must declare the MRU feature")
 	}
 	params, err := metadata.GetFeatureParamsForMRU()
-	if err != nil || params.HashBy != "scorekey" {
+	if err != nil || params.HashBy != "identitykey" {
 		t.Fatalf("MRU hash params = %#v, err=%v", params, err)
 	}
 }
@@ -336,7 +361,7 @@ func TestNotesQueryActionsCarryMRUContext(t *testing.T) {
 		}
 	}
 	newResult := p.Query(context.Background(), plugin.Query{Command: "new"})
-	if len(newResult.Results) != 1 || newResult.Results[0].ScoreKey != "note:new" {
+	if len(newResult.Results) != 1 || newResult.Results[0].IdentityKey != "note:new" {
 		t.Fatalf("new result = %#v", newResult.Results)
 	}
 	if newResult.Results[0].Actions[0].ContextData[notesMRUContextKey] != notesMRUNewID {
@@ -365,7 +390,7 @@ func TestNotesMRURestoreRebuildsCurrentNote(t *testing.T) {
 	if restored.Id != saved.ID || restored.Title != "Updated title" || restored.Group != "" {
 		t.Fatalf("restored note = %#v", restored)
 	}
-	if restored.ScoreKey != "note:"+saved.ID || restored.Actions[0].ContextData[notesMRUContextKey] != saved.ID {
+	if restored.IdentityKey != "note:"+saved.ID || restored.Actions[0].ContextData[notesMRUContextKey] != saved.ID {
 		t.Fatalf("restored note identity = %#v", restored)
 	}
 

@@ -118,10 +118,12 @@ func (a *App) RefreshQuery(_ context.Context, options common.RefreshQueryOptions
 			a.attentionQueryWasGlobal = a.queryContext.IsGlobalQuery
 		}
 		a.query.QueryID = newInputQuery("").QueryID
+		a.queryComplete = false
 		a.queryContext = queryContext{}
 		a.queryContextKnown = false
 		a.completionHint = nil
-		a.stopGlanceLocked(true)
+		// Keep the visible glance through the refresh. Clearing it blanks the query accessory until results return.
+		a.stopGlanceLocked(false)
 		if options.SelectedResultId == "" && !options.PreserveSelectedIndex {
 			a.pendingSelection = nil
 			a.selected = -1
@@ -136,6 +138,7 @@ func (a *App) RefreshQuery(_ context.Context, options common.RefreshQueryOptions
 			a.selected = selected
 		}
 		a.reconcileSelectedPreview()
+		a.beginRefreshResultHoldLocked()
 	}); err != nil {
 		return err
 	}
@@ -350,6 +353,15 @@ func (a *App) UpdateResult(ctx context.Context, result plugin.UpdatableResult) (
 				break
 			}
 		}
+		if script, command, scriptErr := plugin.WebViewScriptUpdate(result.Preview); command {
+			if scriptErr != nil || a.selected < 0 || a.selected >= len(a.results) || a.results[a.selected].ID != result.Id {
+				return
+			}
+			if !a.window.UpdateWebViewScript(a.webViewDocumentKey(), script) {
+				return
+			}
+			result.Preview = nil
+		}
 		updated = a.applyTypedResultUpdate(result)
 	})
 	if err == nil && updated && previewBecameVisible {
@@ -401,8 +413,9 @@ func (a *App) screenshotControlTheme() woxcomponent.ControlTheme {
 // CaptureScreenshot starts the native capture session without changing launcher visibility.
 func (a *App) CaptureScreenshot(_ context.Context, request common.CaptureScreenshotRequest) (common.CaptureScreenshotResult, error) {
 	result, err := woxscreenshot.CaptureScreenshot(woxscreenshot.ScreenshotOptions{
+		OnClipboardReady:  request.OnClipboardReady,
 		SaveEditableScene: request.SaveEditableScene, EditScreenshotPath: request.EditScreenshotPath,
-		ExportFilePath: request.ExportFilePath, CopyToClipboard: request.Output == "" || strings.EqualFold(request.Output, "clipboard"),
+		ExportFilePath: request.ExportFilePath, ExportDirectory: request.ExportDirectory, CopyToClipboard: request.Output == "" || strings.EqualFold(request.Output, "clipboard"),
 		HideAnnotationToolbar: request.HideAnnotationToolbar, AutoConfirm: request.AutoConfirm, AllowVideoRecording: request.AllowVideoRecording,
 		ExtraActions:      request.ExtraActions,
 		RecordingDefaults: woxscreenshot.RecordingDefaults{FPS: 60, ShowPointer: true}, WindowManager: a.windows,
@@ -540,9 +553,12 @@ func fromCoreTheme(theme common.Theme) themeData {
 		ResultItemActiveIndicatorInsetTop:          theme.ResultItemActiveIndicatorInsetTop,
 		ResultItemActiveIndicatorInsetBottom:       theme.ResultItemActiveIndicatorInsetBottom,
 		ResultItemActiveIndicatorBorderRadius:      theme.ResultItemActiveIndicatorBorderRadius,
-		QueryBoxBorderBottomWidth:                  theme.QueryBoxBorderBottomWidth,
+		QuerySeparatorThickness:                    theme.QuerySeparatorThickness,
+		QuerySeparatorPaddingLeft:                  theme.QuerySeparatorPaddingLeft,
+		QuerySeparatorPaddingRight:                 theme.QuerySeparatorPaddingRight,
+		QueryBoxPaddingLeft:                        theme.QueryBoxPaddingLeft,
 		ResultItemActiveIndicatorColor:             theme.ResultItemActiveIndicatorColor,
-		QueryBoxBorderBottomColor:                  theme.QueryBoxBorderBottomColor,
+		QuerySeparatorColor:                        theme.QuerySeparatorColor,
 		PreviewTagBorderRadius:                     theme.PreviewTagBorderRadius,
 		PreviewTagFontColor:                        colors["PreviewTagFontColor"],
 		PreviewTagBackgroundColor:                  colors["PreviewTagBackgroundColor"],
@@ -781,6 +797,7 @@ func (a *App) appendTypedResults(queryID string, results []queryResult) (bool, e
 	}
 	a.resetQueryLoadingLocked()
 	a.resetQueryTransitionLocked()
+	a.releaseRefreshResultHoldLocked()
 	if a.resultsQueryID != queryID {
 		a.results = nil
 		a.resultsSectionRevision++

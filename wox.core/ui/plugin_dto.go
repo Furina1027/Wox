@@ -6,18 +6,47 @@ import (
 
 	"wox/common"
 	"wox/plugin"
+	"wox/plugin/thirdparty/settings"
 	"wox/setting/definition"
 	"wox/ui/dto"
 	"wox/util"
 
-	"github.com/jinzhu/copier"
 	"github.com/samber/lo"
 )
 
-func convertPluginInstanceToDto(ctx context.Context, pluginInstance *plugin.Instance) (installedPlugin dto.PluginDto, err error) {
-	if err := copier.Copy(&installedPlugin, &pluginInstance.Metadata); err != nil {
-		return dto.PluginDto{}, err
+// pluginMetadataDTO maps metadata without dynamic method lookup, allowing the linker
+// to discard unrelated exported methods. Slice fields retain their shallow-copy semantics.
+func pluginMetadataDTO(metadata *plugin.Metadata) dto.PluginDto {
+	return dto.PluginDto{
+		Id: metadata.Id, Name: string(metadata.Name), Author: metadata.Author,
+		Version: metadata.Version, MinWoxVersion: metadata.MinWoxVersion,
+		Runtime: metadata.Runtime, Description: string(metadata.Description),
+		Website: metadata.Website, Entry: metadata.Entry,
+		TriggerKeywords: metadata.TriggerKeywords, Commands: metadata.Commands,
+		SupportedOS: metadata.SupportedOS, Features: metadata.Features,
+		Glances: metadata.Glances, SettingDefinitions: metadata.SettingDefinitions,
+		IsDev: metadata.IsDev,
 	}
+}
+
+// storeManifestDTOs maps the store catalog while preserving non-nil empty results
+// and shallow slice fields from the previous conversion.
+func storeManifestDTOs(manifests []plugin.StorePluginManifest) []dto.PluginDto {
+	plugins := make([]dto.PluginDto, len(manifests))
+	for i, manifest := range manifests {
+		plugins[i] = dto.PluginDto{
+			Id: manifest.Id, Name: manifest.Name, Author: manifest.Author,
+			Version: manifest.Version, MinWoxVersion: manifest.MinWoxVersion,
+			Runtime: string(manifest.Runtime), Description: manifest.Description,
+			Website: manifest.Website, ScreenshotUrls: manifest.ScreenshotUrls,
+			SupportedOS: manifest.SupportedOS, Store: manifest.Store,
+		}
+	}
+	return plugins
+}
+
+func convertPluginInstanceToDto(ctx context.Context, pluginInstance *plugin.Instance) (installedPlugin dto.PluginDto, err error) {
+	installedPlugin = pluginMetadataDTO(&pluginInstance.Metadata)
 	installedPlugin.Name = pluginInstance.GetName(ctx)
 	installedPlugin.NameEn = pluginInstance.Metadata.GetNameEn(ctx)
 	installedPlugin.Description = pluginInstance.GetDescription(ctx)
@@ -47,6 +76,9 @@ func convertPluginInstanceToDto(ctx context.Context, pluginInstance *plugin.Inst
 		installedPlugin.Icon = common.NewWoxImageBase64(`data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAAACXBIWXMAAAsTAAALEwEAmpwYAAAELUlEQVR4nO3ZW2xTdRwH8JPgkxE1XuKFQUe73rb1IriNyYOJvoiALRszvhqffHBLJjEx8Q0TlRiN0RiNrPd27boLY1wUFAQHyquJiTIYpefay7au2yiJG1/zb6Kx/ZfS055T1mS/5JtzXpr+Pufy//9P/gyzURulXIHp28Rp7H5eY/OSc6bRiiPNN9tBQs4bDsFrbN5/AQ2JANO3qRgx9dZ76I2vwingvsQhgHUK2NPQCKeAuOw7Mf72B1hPCEZu9bBrWE8IRm6RH60nBFMNQA3Eh6kVzCzzyOVu5I+HUyvqApREkOZxe5bKR+kVdQFKIcgVLwW4usyrD1ACcSsXKwm4lYvVB1Ar4r7fAWeNCPLClgIcruBFVhRQK4Jc8Vwulj/WZRQqh4i8+X5d5glGaYCDBzp/WYQ5KsJ98JDqCEZJgIO/g53nM9BHpXxMEQHuXnURjFIA0vyOHxfQMiIVxBgW4FIRwSgBcLB3YPt+DrqwWDKGEA9Xz7tlES/9nkPHuQyeP5/By3/crh9gf3wNlpMpaENC2egDHFwHSiBurqL78hLaJlNoPZaCeSIJ01gSu68sqw/YF1uDeTKF5qBQUXR+DkNFiOgbg7BOSBTAOJrIw1QD7J1dzf+Jxs/LitbL4qhjsAAROjAA67hEAQzRBLovLSkPePX6an6U2eblqorWE4en7xCFsIxJFEAfkcoiZANeufo3tMMitnq4qkIArZMp2E+k4H29COEcQPuoSAH0YQm7prPKAMhjsMXFVpUmN4f2qTRsp+dgPTUH21SyJKJtRKQALcNiSYRswLNH46gmTW4W7SfSsP8w/x/AcjIN6/EkvEWPU9AxgNaIQAF0IRFdF7O1AZ75Lg65aXKxsJxKw35mngIQlOVYoiTCHBYogDZQiJANePrbm5AT8uhYT8/hubPzdwW0HU/BMpGA5yCNMIV4CrDdL6DzQrY6wFPfxFBpSPOkabLEuBeAzAOWcYIonCcCr/XDFOQpQLOPIBblA578OoZKQprfcXYeO88tVAwg80D7mARPL40wBjgKoPHy8gFPfHUD90q++Z8W8usauQAyD7RFJbiLEfv7YfBztQMe/3IW5bLFzeYb7/g5UzXANJZE64gIdw+N0Hu52gCPfTGLu2Wrm0XHhQw6Ly7WDDCOJmCOiNQq1r+vHy0etnrAo59fR6mQcZ40Tr7GlAIYogmYhgVqFUsQOjdbHeCRz66hONt8HLqmF9E1nVUcoI9IMIUIYpBGuOLyAQ9/eg3/jybAo/tyFrsuZVUD6MMSjEGeQvj2vgMwLz4gC7D5yAy7+cgMSLYHBbzw2xK6f1Uf0DIswhDgMeQsRPAae0QW4sGP/9zz0Cd/seRTcfeVpboCdCEReh+PIUeNiHWx7dtsDxQibF6mkQpFCHLONOYGvM1Hmm+obd+NYhqg/gG2aOxED6eh5gAAAABJRU5ErkJggg==`)
 	}
 	installedPlugin.Icon = pluginInstance.ConvertIcon(ctx, installedPlugin.Icon)
+	if panel, ok := pluginInstance.Plugin.(settings.Native); ok {
+		installedPlugin.HasNativeSettings = panel.HasNativeSettings()
+	}
 	return convertPluginDto(ctx, installedPlugin, pluginInstance), nil
 }
 

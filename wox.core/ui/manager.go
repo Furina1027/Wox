@@ -20,7 +20,6 @@ import (
 	"wox/analytics"
 	"wox/common"
 	"wox/common/icons"
-	"wox/diagnostic"
 	corehotkey "wox/hotkey"
 	"wox/i18n"
 	"wox/plugin"
@@ -29,18 +28,21 @@ import (
 	"wox/privacy"
 	"wox/resource"
 	"wox/setting"
+	"wox/supervisor"
 	"wox/ui/contract"
 	woxui "wox/ui/runtime"
 	"wox/updater"
 	"wox/util"
 	"wox/util/appearance"
 	"wox/util/autostart"
+	"wox/util/clipboard"
 	"wox/util/fuzzymatch"
 	utilhotkey "wox/util/hotkey"
 	"wox/util/ime"
 	"wox/util/keyboard"
 	"wox/util/osvariant"
 	"wox/util/overlay/confettioverlay"
+	"wox/util/processmemory"
 	"wox/util/screen"
 	"wox/util/selection"
 	"wox/util/shell"
@@ -95,6 +97,8 @@ type Manager struct {
 	mainHotkeyRegistrationError string
 	trayEmojiWarmMu             sync.Mutex
 	trayEmojiWarmInFlight       map[string]struct{}
+	trayMu                      sync.Mutex
+	trayVisible                 bool
 }
 
 func GetUIManager() *Manager {
@@ -413,7 +417,7 @@ func (m *Manager) RegisterSelectionHotkey(ctx context.Context, combineKey string
 // handleDictationHotkeyPress finds the loaded DictationPlugin and starts
 // the recording session.
 func (m *Manager) handleDictationHotkeyPress(ctx context.Context, actionID string) {
-	sp := plugin.GetPluginManager().GetSystemPlugin("a3f7b8c2-d1e4-4f6a-9b0c-7e2d1a5f8b3e")
+	sp := plugin.GetPluginManager().GetSystemPlugin(common.DictationPluginID)
 	if sp == nil {
 		logger.Error(ctx, fmt.Sprintf("dictation plugin not found for hotkey press callback: action=%s", actionID))
 		return
@@ -430,7 +434,7 @@ func (m *Manager) handleDictationHotkeyPress(ctx context.Context, actionID strin
 // the recording session, producing the recognized text.
 func (m *Manager) handleDictationHotkeyRelease(ctx context.Context, actionID string) {
 	logger.Info(ctx, fmt.Sprintf("dictation: handleDictationHotkeyRelease enter, action=%s", actionID))
-	sp := plugin.GetPluginManager().GetSystemPlugin("a3f7b8c2-d1e4-4f6a-9b0c-7e2d1a5f8b3e")
+	sp := plugin.GetPluginManager().GetSystemPlugin(common.DictationPluginID)
 	if sp == nil {
 		logger.Error(ctx, fmt.Sprintf("dictation plugin not found for hotkey release callback: action=%s", actionID))
 		return
@@ -449,7 +453,7 @@ func (m *Manager) handleDictationHotkeyRelease(ctx context.Context, actionID str
 // handleDictationHotkeyPressAction finds the loaded DictationPlugin and runs
 // the press-triggered dictation action.
 func (m *Manager) handleDictationHotkeyPressAction(ctx context.Context, actionID string) {
-	sp := plugin.GetPluginManager().GetSystemPlugin("a3f7b8c2-d1e4-4f6a-9b0c-7e2d1a5f8b3e")
+	sp := plugin.GetPluginManager().GetSystemPlugin(common.DictationPluginID)
 	if sp == nil {
 		logger.Error(ctx, fmt.Sprintf("dictation plugin not found for hotkey callback: action=%s", actionID))
 		return
@@ -607,13 +611,20 @@ func (m *Manager) showPluginPackageInstaller(ctx context.Context, rawPath string
 	// Hide-on-blur would close the installer when Explorer/Finder refocuses
 	// after a double-click, before the user can confirm the install.
 	m.RefreshActiveWindowSnapshot(ctx)
-	m.openSecondaryInstance(ctx, string(common.ShowSourceSelection), common.PlainQuery{
-		QueryType: plugin.QueryTypeSelection,
-		QuerySelection: selection.Selection{
-			Type:      selection.SelectionTypeFile,
-			FilePaths: []string{filePath},
+	// File-open deeplinks belong to the primary launcher, even though their
+	// payload uses a selection query to offer install/reinstall actions.
+	m.ui.OpenWoxInstance(ctx, common.OpenWoxInstanceRequest{
+		Role: common.WoxInstanceRolePrimary,
+		Query: common.PlainQuery{
+			QueryId:   uuid.NewString(),
+			QueryType: plugin.QueryTypeSelection,
+			QuerySelection: selection.Selection{
+				Type:      selection.SelectionTypeFile,
+				FilePaths: []string{filePath},
+			},
 		},
-	}, pluginPackageInstallShowContext())
+		ShowApp: pluginPackageInstallShowContext(),
+	})
 }
 
 func pluginPackageInstallShowContext() common.ShowContext {
@@ -1279,8 +1290,25 @@ func (m *Manager) releaseHiddenCoreMemory(ctx context.Context) {
 		// Drop prepared search text before the pinyin table. Those indexes hold the
 		// table's syllable slices, so the table cannot be collected while they remain.
 		plugin.GetPluginManager().ReleasePreparedSearchText()
+		// Queries finishing during the first trim may have repopulated pinyin
+		// segments, which hold dictionary slices even after the dictionary drops.
+		fuzzymatch.ReleaseIdleCaches()
 		fuzzymatch.ReleasePinyinDictionary()
 		debug.FreeOSMemory()
+
+		// Native windows release their renderers on an independent 30-second
+		// timer. Let that cleanup finish before asking Windows to decommit LFH
+		// caches; Go's scavenger cannot return these native heap pages.
+		time.Sleep(5 * time.Second)
+		if impl, ok := m.ui.(*uiImpl); ok && impl.hasAnyVisibleSession() {
+			return
+		}
+		// Background indexing and screenshot persistence can refill SQLite after
+		// the first trim. Return those idle pages before decommitting native heaps.
+		sqlitememory.ReleaseIdleMemory(ctx)
+		if err := processmemory.ReleaseIdleNativeHeap(); err != nil {
+			util.GetLogger().Warn(ctx, fmt.Sprintf("release idle native heap: %v", err))
+		}
 	})
 }
 
@@ -1373,6 +1401,15 @@ func (m *Manager) IsThemeUpgradable(id string, version string) bool {
 }
 
 func (m *Manager) ShowTray() {
+	m.trayMu.Lock()
+	defer m.trayMu.Unlock()
+	// CreateTray starts another message loop and adds a second icon. Re-applying
+	// ShowTray, including a migration that leaves the icon visible, must not do that.
+	if m.trayVisible {
+		return
+	}
+	m.trayVisible = true
+
 	ctx := util.NewTraceContext()
 	tray.CreateTray(resource.GetAppIcon(), func() {
 		m.GetUI(ctx).ToggleApp(ctx, common.ShowContext{
@@ -1402,6 +1439,9 @@ func (m *Manager) ShowTray() {
 }
 
 func (m *Manager) HideTray() {
+	m.trayMu.Lock()
+	defer m.trayMu.Unlock()
+	m.trayVisible = false
 	tray.RemoveTray()
 }
 
@@ -1437,7 +1477,11 @@ func (m *Manager) PostSettingUpdate(ctx context.Context, key string, value strin
 			logger.Error(ctx, fmt.Sprintf("failed to update selection hotkey: %s", err.Error()))
 		}
 	case "LogLevel":
-		util.GetLogger().SetLevel(vs)
+		if !supervisor.DebugModeEnabled() {
+			util.GetLogger().SetLevel(vs)
+		}
+	case "HttpProxyEnabled", "HttpProxyUrl":
+		setting.GetSettingManager().GetWoxSetting(ctx).ApplyHTTPProxy(ctx)
 	case "QueryHotkeys":
 		woxSetting := setting.GetSettingManager().GetWoxSetting(ctx)
 		if err := m.registerWoxHotkeys(ctx, corehotkey.WoxConfigFromSetting(woxSetting), false); err != nil {
@@ -1934,15 +1978,35 @@ func clampInt(v int, min int, max int) int {
 	return v
 }
 
+// RestartApp starts a supervisor that waits for this process to exit before relaunching.
+// Preserve troubleshooting mode without replaying startup files or deep links.
+func (m *Manager) RestartApp(ctx context.Context) error {
+	args := []string{supervisor.ArgChild}
+	if supervisor.DebugModeEnabled() {
+		args = append(args, supervisor.ArgDebugMode)
+	}
+	if util.IsThirdPartyPluginsDisabled() {
+		args = append(args, util.ArgNoThirdPartyPlugins)
+	}
+	if err := supervisor.GetManager().StartSupervisorDetached(ctx, true, args...); err != nil {
+		return err
+	}
+	m.ExitApp(ctx)
+	return nil
+}
+
 func (m *Manager) ExitApp(ctx context.Context) {
 	m.exitOnce.Do(func() {
 		util.GetLogger().Info(ctx, "start quitting")
 		plugin.GetPluginManager().Stop(ctx)
 		shell.CloseLifetimeBoundJob()
-		diagnostic.GetManager().MarkCleanExit(ctx)
+		supervisor.GetManager().MarkCleanExit(ctx)
 		util.GetLogger().Info(ctx, "bye~")
 		if err := privacy.StartExitCleanup(setting.GetSettingManager().GetWoxSetting(ctx)); err != nil {
 			util.GetLogger().Error(ctx, fmt.Sprintf("failed to start private mode cleanup: %s", err.Error()))
+		}
+		if err := clipboard.Flush(woxui.Call); err != nil {
+			util.GetLogger().Warn(ctx, err.Error())
 		}
 		os.Exit(0)
 	})
@@ -2149,6 +2213,7 @@ func (m *Manager) isUIWindow(activeWindowPid int) bool {
 }
 
 func (m *Manager) ProcessDeeplink(ctx context.Context, deeplink string) {
+	ctx = util.WithCoreSessionContext(ctx)
 	logger.Info(ctx, fmt.Sprintf("start processing deeplink: %s", deeplink))
 
 	parts := strings.SplitN(deeplink, "?", 2)
@@ -2196,10 +2261,6 @@ func (m *Manager) ProcessDeeplink(ctx context.Context, deeplink string) {
 	// installing silently so the user can confirm install/upgrade/reinstall.
 	if command == "install" {
 		m.showPluginPackageInstaller(ctx, arguments["path"])
-	}
-
-	if command == "select" {
-		m.QuerySelection(ctx)
 	}
 
 	if command == "toggle" {
@@ -2270,6 +2331,9 @@ func (m *Manager) ProcessDeeplink(ctx context.Context, deeplink string) {
 // This includes creating the new directory structure and copying necessary data
 func (m *Manager) ChangeUserDataDirectory(ctx context.Context, newDirectory string) error {
 	location := util.GetLocation()
+	if location.IsPortableUserData() {
+		return fmt.Errorf("portable mode uses the wox-user directory next to the executable")
+	}
 	oldDirectory := location.GetUserDataDirectory()
 
 	// check if new directory is valid

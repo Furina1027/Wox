@@ -54,7 +54,7 @@ type BrowserBookmarkPlugin struct {
 
 func (c *BrowserBookmarkPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "95d041d3-be7e-4b20-8517-88dda2db280b",
+		Id:            common.BrowserBookmarkPluginID,
 		Name:          "i18n:plugin_browser_bookmark_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -112,10 +112,11 @@ func (c *BrowserBookmarkPlugin) Query(ctx context.Context, query plugin.Query) p
 				icon = cachedIcon
 			}
 			results = append(results, plugin.QueryResult{
-				Title:    bookmark.Name,
-				SubTitle: bookmark.Url,
-				Score:    matchScore,
-				Icon:     icon,
+				Title:       bookmark.Name,
+				SubTitle:    bookmark.Url,
+				IdentityKey: bookmark.Url,
+				Score:       matchScore,
+				Icon:        icon,
 				Actions: []plugin.QueryResultAction{
 					{
 						Name: "i18n:plugin_browser_bookmark_open_in_browser",
@@ -442,9 +443,10 @@ func (c *BrowserBookmarkPlugin) handleMRURestore(ctx context.Context, mruData pl
 	}
 
 	result := &plugin.QueryResult{
-		Title:    name,
-		SubTitle: url,
-		Icon:     mruData.Icon,
+		Title:       name,
+		SubTitle:    url,
+		IdentityKey: url,
+		Icon:        mruData.Icon,
 		Actions: []plugin.QueryResultAction{
 			{
 				Name:        "i18n:plugin_browser_bookmark_open_in_browser",

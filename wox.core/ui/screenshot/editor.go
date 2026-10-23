@@ -164,10 +164,18 @@ type screenshotEditorOverlayState struct {
 	workspaceSize    Size
 	start            Point
 	selection        Rect
-	// Window candidates use editor coordinates, ordered from front to back before the overlay opens.
-	windowCandidates []Rect
-	pressedWindow    Rect
-	selectionDragged bool
+	// Window and display candidates use editor coordinates; windows retain the pre-overlay stacking order.
+	windowCandidates  []Rect
+	displayCandidates []Rect
+	objectSelection   screenshotObjectSelection
+	objectQuery       screenshotObjectQuery
+	objectQueryClose  func()
+	objectRequests    chan screenshotObjectRequest
+	objectCancel      context.CancelFunc
+	objectStop        context.CancelFunc
+	objectClosed      bool
+	pressedWindow     Rect
+	selectionDragged  bool
 	// Native window pixels are export-only; any selection change cancels their use.
 	originalSource      image.Image
 	windowSource        *image.RGBA
@@ -202,6 +210,12 @@ type screenshotEditorOverlayState struct {
 	extraActionRects        []Rect
 	hoveredExtraIndex       int
 	toolbarRect             Rect
+	toolbarGripRect         Rect
+	// toolbarMoved keeps a dragged toolbar at the user's position instead of snapping back to the selection.
+	toolbarMoved            bool
+	toolbarOrigin           Point
+	toolbarDragging         bool
+	toolbarDragGrab         Point
 	toolRects               [screenshotEditorToolCount]Rect
 	tooltips                [screenshotEditorToolCount]string
 	actionTooltips          ScreenshotActionTooltips
@@ -303,6 +317,9 @@ type screenshotEditorPlatform struct {
 	frameSize               Size
 	initialSelection        *Rect
 	windowCandidates        []Rect
+	displayCandidates       []Rect
+	objectQuery             screenshotObjectQuery
+	objectQueryClose        func()
 	captureWindow           func(Rect) (*image.RGBA, error)
 	initialWindowSource     *image.RGBA
 	initialBackgroundSource *image.RGBA
@@ -346,6 +363,9 @@ func newScreenshotEditorOverlayState(options ScreenshotOptions, uiImage *Image, 
 		sizeDialogOptions:   options,
 		frameSize:           platform.frameSize,
 		windowCandidates:    platform.windowCandidates,
+		displayCandidates:   platform.displayCandidates,
+		objectQuery:         platform.objectQuery,
+		objectQueryClose:    platform.objectQueryClose,
 		autoConfirm:         options.AutoConfirm,
 		hideTools:           options.HideAnnotationToolbar,
 		allowVideoRecording: options.AllowVideoRecording,
@@ -416,6 +436,8 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 	}
 
 	state := newScreenshotEditorOverlayState(options, uiImage, platform)
+	state.startObjectSelection()
+	defer state.stopObjectSelection()
 	state.originalSource = source
 	state.backgroundWallpaper = wallpaper
 	defer state.releaseWindowBackground()
@@ -476,6 +498,7 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 				state.mu.Lock()
 				state.pointerPosition = *pointer
 				state.pointerInside = true
+				state.updateObjectSelectionLocked(*pointer)
 				state.mu.Unlock()
 			}
 		}
@@ -594,7 +617,8 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 			return ScreenshotResult{}, composeErr
 		}
 		exportedImage = composited
-		if windowCapture {
+		// Unpainted window pixels already carry their original alpha; only new paint needs clipping.
+		if windowCapture && (len(annotations) > 0 || (showCursor && cursorPixel != nil)) {
 			clipScreenshotWindowAlpha(composited, exportSource, selection, frameSize)
 		}
 		if showBackground {
@@ -609,7 +633,7 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 	exportPath := screenshotSaveAsExportPath(options.ExportFilePath)
 	reservedExport := exportPath == ""
 	if reservedExport {
-		exportPath, err = reserveScreenshotExportFilePath()
+		exportPath, err = reserveScreenshotExportFilePath(options.ExportDirectory)
 		if err != nil {
 			return ScreenshotResult{}, err
 		}
@@ -638,13 +662,45 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 		))
 	}
 	copyToClipboard := options.CopyToClipboard && !outcome.pinned && outcome.saveAsPath == ""
+	result := ScreenshotResult{
+		PinToScreen:             outcome.pinned,
+		PinOverlayShown:         pinOverlayShown,
+		ArtifactKind:            "image",
+		ArtifactPath:            exportPath,
+		ScreenshotPath:          exportPath,
+		ClipboardWriteSucceeded: outcome.pinned || outcome.saveAsPath != "" || !options.CopyToClipboard,
+		LogicalSelection:        logicalSelection,
+		ExtraActionID:           outcome.extraActionID,
+	}
 	var clipboardPNG bytes.Buffer
-	var pngCopy *bytes.Buffer
 	if copyToClipboard {
-		pngCopy = &clipboardPNG
+		encodeStartedAt := time.Now()
+		if err := imageencode.PNG(&clipboardPNG, exportedImage); err != nil {
+			return ScreenshotResult{}, fmt.Errorf("encode screenshot clipboard image: %w", err)
+		}
+		util.GetLogger().Debug(context.Background(), fmt.Sprintf(
+			"screenshot_export stage=png_encoded durationMs=%d totalMs=%d bytes=%d",
+			time.Since(encodeStartedAt).Milliseconds(), time.Since(completionStartedAt).Milliseconds(), clipboardPNG.Len(),
+		))
+		// Publish before filesystem work; history reuses the exact bytes after the image becomes pasteable.
+		clipboardStartedAt := time.Now()
+		if err := publishScreenshotClipboard(overlay.WriteClipboardImageWithPNG, exportedImage, clipboardPNG.Bytes(), options.OnClipboardReady); err != nil {
+			result.ClipboardWarningMessage = err.Error()
+		} else {
+			result.ClipboardWriteSucceeded = true
+		}
+		util.GetLogger().Debug(context.Background(), fmt.Sprintf(
+			"screenshot_export stage=clipboard_ready durationMs=%d totalMs=%d success=%t reusedPNG=%t",
+			time.Since(clipboardStartedAt).Milliseconds(), time.Since(completionStartedAt).Milliseconds(), result.ClipboardWriteSucceeded, clipboardPNG.Len() > 0,
+		))
 	}
 	fileStartedAt := time.Now()
-	if err := writeScreenshotImageWithPNG(exportPath, exportedImage, pngCopy); err != nil {
+	if copyToClipboard {
+		err = writeScreenshotPNG(exportPath, clipboardPNG.Bytes())
+	} else {
+		err = writeScreenshotImage(exportPath, exportedImage)
+	}
+	if err != nil {
 		return ScreenshotResult{}, err
 	}
 	util.GetLogger().Debug(context.Background(), fmt.Sprintf(
@@ -656,29 +712,6 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 			util.GetLogger().Warn(context.Background(), fmt.Sprintf("failed to write screenshot download: path=%s err=%s", savePath, err.Error()))
 		}
 	}
-
-	result := ScreenshotResult{
-		PinToScreen:             outcome.pinned,
-		PinOverlayShown:         pinOverlayShown,
-		ArtifactKind:            "image",
-		ArtifactPath:            exportPath,
-		ScreenshotPath:          exportPath,
-		ClipboardWriteSucceeded: outcome.pinned || outcome.saveAsPath != "" || !options.CopyToClipboard,
-		LogicalSelection:        logicalSelection,
-		ExtraActionID:           outcome.extraActionID,
-	}
-	if copyToClipboard {
-		clipboardStartedAt := time.Now()
-		if err := overlay.WriteClipboardImageWithPNG(exportedImage, clipboardPNG.Bytes()); err != nil {
-			result.ClipboardWarningMessage = err.Error()
-		} else {
-			result.ClipboardWriteSucceeded = true
-		}
-		util.GetLogger().Debug(context.Background(), fmt.Sprintf(
-			"screenshot_export stage=clipboard_ready durationMs=%d totalMs=%d success=%t reusedPNG=%t",
-			time.Since(clipboardStartedAt).Milliseconds(), time.Since(completionStartedAt).Milliseconds(), result.ClipboardWriteSucceeded, clipboardPNG.Len() > 0,
-		))
-	}
 	if options.SaveEditableScene && !scrolling {
 		sceneStartedAt := time.Now()
 		// Refuse an editable scene if the desktop changed while the capture editor was open.
@@ -686,6 +719,10 @@ func runScreenshotEditor(options ScreenshotOptions, source image.Image, platform
 		if err == nil && !screenshotDisplayLayoutMatches(options.capturedDisplays, displays) {
 			err = ErrScreenshotDisplayLayoutChanged
 		}
+		util.GetLogger().Debug(context.Background(), fmt.Sprintf(
+			"screenshot_export stage=scene_display_checked durationMs=%d totalMs=%d success=%t",
+			time.Since(sceneStartedAt).Milliseconds(), time.Since(completionStartedAt).Milliseconds(), err == nil,
+		))
 		if err == nil {
 			state.mu.Lock()
 			result.SaveEditableScene, err = prepareScreenshotDocumentSave(exportPath, source, exportedImage, state)
@@ -737,11 +774,21 @@ func screenshotEditorPixelSelection(sourceBounds image.Rectangle, selection Rect
 
 // writeScreenshotImage uses the same PNG encoder for history and user-chosen destinations.
 func writeScreenshotImage(path string, source image.Image) error {
-	return writeScreenshotImageWithPNG(path, source, nil)
+	return writeScreenshotExport(path, func(writer io.Writer) error {
+		return imageencode.PNG(writer, source)
+	})
 }
 
-// writeScreenshotImageWithPNG retains only confirmed PNG exports needed by the clipboard, sharing the same compression pass.
-func writeScreenshotImageWithPNG(path string, source image.Image, pngCopy *bytes.Buffer) error {
+// writeScreenshotPNG saves the already-published clipboard image without another encoding pass.
+func writeScreenshotPNG(path string, encoded []byte) error {
+	return writeScreenshotExport(path, func(writer io.Writer) error {
+		_, err := writer.Write(encoded)
+		return err
+	})
+}
+
+// writeScreenshotExport atomically publishes an encoded image so history never reads an incomplete export.
+func writeScreenshotExport(path string, write func(io.Writer) error) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create screenshot export directory: %w", err)
 	}
@@ -751,13 +798,9 @@ func writeScreenshotImageWithPNG(path string, source image.Image, pngCopy *bytes
 		return fmt.Errorf("create screenshot export file: %w", err)
 	}
 	defer os.Remove(file.Name())
-	var writer io.Writer = file
-	if pngCopy != nil {
-		writer = io.MultiWriter(file, pngCopy)
-	}
-	if err := imageencode.PNG(writer, source); err != nil {
+	if err := write(file); err != nil {
 		_ = file.Close()
-		return fmt.Errorf("encode screenshot image: %w", err)
+		return fmt.Errorf("write screenshot image: %w", err)
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("close screenshot export file: %w", err)
@@ -778,6 +821,7 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 		state.cancelRect = cancel
 		state.saveRect = save
 		state.toolbarRect = toolbar
+		state.toolbarGripRect = Rect{}
 		state.sizeLabelRect = Rect{}
 		state.mu.Unlock()
 		state.publishSizeLabel(Rect{}, "")
@@ -812,7 +856,13 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	}
 	previewWindow := !hasSelection && state.pointerInside
 	if previewWindow {
-		selection = state.windowAtPoint(state.pointerPosition)
+		state.updateObjectSelectionLocked(state.pointerPosition)
+		var animating bool
+		selection, animating = state.objectSelection.transition.sample(time.Now())
+		state.objectSelection.transition.presented = selection.Width >= 2 && selection.Height >= 2
+		if animating && state.window != nil {
+			defer state.window.RequestAnimationFrame()
+		}
 		backgroundBounds = selection
 		hasSelection = selection.Width >= 2 && selection.Height >= 2
 	}
@@ -854,6 +904,8 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	}
 	activeTool := state.activeTool
 	hideTools := state.hideTools
+	toolbarMoved := state.toolbarMoved
+	toolbarOrigin := state.toolbarOrigin
 	annotationColor := state.annotationColor
 	mosaicRadius := state.mosaicRadius
 	showMosaicCursor := activeTool == screenshotEditorToolMosaic && !state.autoConfirm && state.pointerCursor == PointerCursorHidden &&
@@ -937,6 +989,7 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	state.backgroundRect = Rect{}
 	state.recordRect = Rect{}
 	state.toolbarRect = Rect{}
+	state.toolbarGripRect = Rect{}
 	state.sizeLabelRect = Rect{}
 	state.toolRects = [screenshotEditorToolCount]Rect{}
 	state.editBarRect = Rect{}
@@ -1015,6 +1068,10 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 			toolbarStackHeight += editHeight + scaled(8)
 		}
 		toolbarRect = screenshotEditorToolbarPlacement(backgroundBounds, Rect{Width: frame.Size.Width, Height: frame.Size.Height}, toolbarWidth, toolbarHeight, toolbarStackHeight, uiScale)
+		if toolbarMoved {
+			origin := clampScreenshotEditorToolbarOrigin(toolbarOrigin, toolbarWidth, toolbarHeight, frame.Size, uiScale)
+			toolbarRect.X, toolbarRect.Y = origin.X, origin.Y
+		}
 	}
 	label := fmt.Sprintf("%.0f x %.0f", selection.Width, selection.Height)
 	if previewImage != nil {
@@ -1037,6 +1094,7 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	if pointerInside && screenshotEditorRectContains(chip, pointerPosition) {
 		displayList.StrokeRoundedRect(chip, scaled(10), scaled(1), green)
 	}
+	gripRect := screenshotEditorToolbarGripRect(toolbarRect, uiScale)
 	buttonIndex := 0
 	nextButton := func() Rect {
 		rect := toolbarButtons[buttonIndex]
@@ -1078,6 +1136,7 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	confirmRect := nextButton()
 	state.mu.Lock()
 	state.toolbarRect = toolbarRect
+	state.toolbarGripRect = gripRect
 	state.toolRects = toolRects
 	state.pinRect = pinRect
 	state.undoRect = undoRect
@@ -1092,6 +1151,10 @@ func (state *screenshotEditorOverlayState) draw(displayList *DisplayList, frame 
 	state.mu.Unlock()
 
 	displayList.FillRoundedRect(toolbarRect, scaled(12), Color{R: 30, G: 26, B: 24, A: 255})
+	if gripRect.Width > 0 {
+		// Smaller and dimmer than the action icons so the handle reads as chrome, not a tool.
+		drawScreenshotEditorToolbarIconSized(displayList, icons.ControlGripDots, gripRect, Color{R: 255, G: 255, B: 255, A: 153}, uiScale, 16)
+	}
 	if !hideTools {
 		highlightedTool := activeTool
 		if hasSelectedMark {
@@ -1686,11 +1749,10 @@ func drawScreenshotEditorToolbarIcon(displayList *DisplayList, name string, rect
 }
 
 func drawScreenshotEditorToolbarIconSized(displayList *DisplayList, name string, rect Rect, color Color, uiScale, logicalSize float32) {
-	size := logicalSize * uiScale
-	inset := (rect.Width - size) / 2
+	slot := screenshotEditorToolbarIconRect(rect, logicalSize, uiScale)
 	key := screenshotEditorIconCacheKey{name: name, color: color}
 	if cached, ok := screenshotEditorIconCache.Load(key); ok {
-		displayList.DrawImage(cached.(*Image), Rect{X: rect.X + inset, Y: rect.Y + inset, Width: size, Height: size})
+		displayList.DrawImage(cached.(*Image), slot)
 		return
 	}
 	icon := icons.Get(name)
@@ -1715,7 +1777,17 @@ func drawScreenshotEditorToolbarIconSized(displayList *DisplayList, name string,
 		return
 	}
 	actual, _ := screenshotEditorIconCache.LoadOrStore(key, image)
-	displayList.DrawImage(actual.(*Image), Rect{X: rect.X + inset, Y: rect.Y + inset, Width: size, Height: size})
+	displayList.DrawImage(actual.(*Image), slot)
+}
+
+// screenshotEditorToolbarIconRect centers a glyph in its slot on both axes.
+// Slots are not always square; the drag handle is a full-height strip beside 40px tool buttons.
+func screenshotEditorToolbarIconRect(slot Rect, logicalSize, uiScale float32) Rect {
+	size := logicalSize * max(float32(1), uiScale)
+	return Rect{
+		X: slot.X + (slot.Width-size)/2, Y: slot.Y + (slot.Height-size)/2,
+		Width: size, Height: size,
+	}
 }
 
 // drawScreenshotEditorCursor previews the captured pointer with the same marker exported to the image.
@@ -1866,10 +1938,27 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 		}
 		return
 	}
-	if event.Button != PointerButtonPrimary && event.Kind != PointerMove && event.Kind != PointerLeave {
+	if event.Button != PointerButtonPrimary && event.Kind != PointerMove && event.Kind != PointerLeave && event.Kind != PointerScroll {
 		return
 	}
 	switch event.Kind {
+	case PointerScroll:
+		state.mu.Lock()
+		if !state.hasSelection && !state.dragging && event.Scroll.Y != 0 {
+			state.pointerPosition, state.pointerInside = event.Position, true
+			state.updateObjectSelectionLocked(event.Position)
+			selection := &state.objectSelection
+			step := 1
+			if event.Scroll.Y < 0 {
+				step = -1
+			}
+			selection.index = min(max(selection.index+step, 0), max(0, len(selection.path)-1))
+			selection.explicit = true
+			selection.transition.present(state.objectAtPointLocked(event.Position), time.Now())
+		}
+		state.mu.Unlock()
+		state.invalidate()
+		return
 	case PointerDown:
 		state.mu.Lock()
 		if state.hasSelection && screenshotEditorRectContains(state.sizeLabelRect, event.Position) {
@@ -1880,6 +1969,17 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 		}
 		state.pointerPosition = event.Position
 		state.pointerInside = true
+		if state.hasSelection && screenshotEditorRectContains(state.toolbarGripRect, event.Position) {
+			state.toolbarDragging = true
+			state.toolbarMoved = true
+			state.toolbarDragGrab = Point{X: event.Position.X - state.toolbarRect.X, Y: event.Position.Y - state.toolbarRect.Y}
+			state.toolbarOrigin = Point{X: state.toolbarRect.X, Y: state.toolbarRect.Y}
+			state.pointerCursor = PointerCursorMove
+			state.mu.Unlock()
+			state.setPointerCursor(PointerCursorMove)
+			state.invalidate()
+			return
+		}
 		if state.activeTool == screenshotEditorToolMosaic || state.activeTool == screenshotEditorToolBrush || state.activeTool == screenshotEditorToolEraser || state.pointerCursor == PointerCursorHidden {
 			state.updateHoverLocked(event.Position)
 		}
@@ -2053,6 +2153,22 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 		pointerChanged := !state.pointerInside || state.pointerPosition != event.Position
 		state.pointerPosition = event.Position
 		state.pointerInside = true
+		if state.toolbarDragging {
+			origin := clampScreenshotEditorToolbarOrigin(
+				Point{X: event.Position.X - state.toolbarDragGrab.X, Y: event.Position.Y - state.toolbarDragGrab.Y},
+				state.toolbarRect.Width, state.toolbarRect.Height, state.frameSize, state.uiScale,
+			)
+			moved := state.toolbarOrigin != origin
+			state.toolbarOrigin = origin
+			state.toolbarMoved = true
+			state.pointerCursor = PointerCursorMove
+			state.mu.Unlock()
+			state.setPointerCursor(PointerCursorMove)
+			if moved {
+				state.invalidate()
+			}
+			return
+		}
 		if state.fontSizeDragging {
 			props := screenshotEditorFontSizeSliderProps(state.editFontSizeRect, state.uiScale, state.fontSizeLocked())
 			state.setFontSizeLocked(props.ValueAt(event.Position.X - state.editFontSizeRect.X))
@@ -2111,6 +2227,10 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 		state.invalidate()
 	case PointerLeave:
 		state.mu.Lock()
+		if state.toolbarDragging {
+			state.mu.Unlock()
+			return
+		}
 		hoverChanged := state.pointerInside || state.hasHoveredMark || state.hasHoveredTool || state.hasHoveredAction || state.pointerCursor != PointerCursorDefault
 		state.pointerInside = false
 		state.hasHoveredMark = false
@@ -2124,6 +2244,15 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 		}
 	case PointerUp:
 		state.mu.Lock()
+		if state.toolbarDragging {
+			state.toolbarDragging = false
+			state.updateHoverLocked(event.Position)
+			cursor := state.pointerCursor
+			state.mu.Unlock()
+			state.setPointerCursor(cursor)
+			state.invalidate()
+			return
+		}
 		state.fontSizeDragging = false
 		state.textSelecting = false
 		if state.dragging {
@@ -2142,7 +2271,7 @@ func (state *screenshotEditorOverlayState) pointer(event PointerEvent) {
 			autoConfirm := state.autoConfirm && state.hasSelection
 			selection, generation := state.selection, state.windowCaptureGeneration
 			var captureDone chan struct{}
-			if windowClick && state.captureWindow != nil {
+			if windowClick && state.captureWindow != nil && selection == state.windowAtPoint(state.start) {
 				captureDone = make(chan struct{})
 				state.windowCaptureDone = captureDone
 				state.windowSelection = &selection
@@ -2668,7 +2797,11 @@ func (state *screenshotEditorOverlayState) beginPointerToolActionLocked(event Po
 			state.backgroundSource, state.backgroundPreview = nil, nil
 			state.showBackground, state.backgroundLoading, state.backgroundFailed = false, false, false
 			state.start = event.Position
-			state.pressedWindow = state.windowAtPoint(event.Position)
+			state.updateObjectSelectionLocked(event.Position)
+			state.pressedWindow = state.objectAtPointLocked(event.Position)
+			if state.objectCancel != nil {
+				state.objectCancel()
+			}
 			state.selectionDragged = false
 			state.selection = Rect{X: event.Position.X, Y: event.Position.Y}
 			state.dragging = true
@@ -3157,6 +3290,10 @@ func (state *screenshotEditorOverlayState) updateHoverLocked(point Point) bool {
 	if screenshotEditorRectContains(state.sizeLabelRect, point) {
 		state.pointerCursor = PointerCursorHand
 		return previousHasHoveredMark || previousHasHoveredTool || previousHasHoveredAction || previousHoveredExtra >= 0 || previousCursor != PointerCursorHand
+	}
+	if screenshotEditorRectContains(state.toolbarGripRect, point) {
+		state.pointerCursor = PointerCursorMove
+		return previousHasHoveredMark || previousHasHoveredTool || previousHasHoveredAction || previousHoveredExtra >= 0 || previousCursor != PointerCursorMove
 	}
 	for index := 1; index < len(state.toolRects); index++ {
 		if screenshotEditorRectContains(state.toolRects[index], point) {

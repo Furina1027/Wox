@@ -17,6 +17,7 @@ import (
 	"wox/cloudsync"
 	"wox/database"
 	"wox/i18n"
+	"wox/network"
 	"wox/setting"
 	"wox/util"
 	"wox/util/trash"
@@ -26,6 +27,9 @@ import (
 )
 
 const pluginDownloadTimeout = 2 * time.Minute
+
+// OfficialPluginStoreID is the built-in plugin catalog. Settings lists it above other stores.
+const OfficialPluginStoreID = "wox"
 
 type storeManifest struct {
 	Name string
@@ -48,6 +52,9 @@ type StorePluginManifest struct {
 	SupportedOS    []string
 	DateCreated    string
 	DateUpdated    string
+	// Store is the catalog that published this manifest. It is assigned while
+	// catalogs are merged and is not part of the downloaded JSON.
+	Store string `json:"-"`
 
 	// I18n holds inline translations for the store manifest.
 	// Map structure: langCode -> key -> translatedValue
@@ -209,6 +216,9 @@ func (s *Store) buildManifestSignature(manifests []StorePluginManifest) string {
 }
 
 func (s *Store) GetStorePluginManifests(ctx context.Context) []StorePluginManifest {
+	if network.IsOffline() {
+		return nil
+	}
 	var storePluginManifests []StorePluginManifest
 
 	for _, store := range s.getStoreManifests(ctx) {
@@ -236,13 +246,30 @@ func (s *Store) GetStorePluginManifests(ctx context.Context) []StorePluginManife
 			if !IsAnySupportedInCurrentOS(manifest.SupportedOS) {
 				continue
 			}
+			if manifest.Store == "" {
+				manifest.Store = OfficialPluginStoreID
+			}
 
 			storePluginManifests = append(storePluginManifests, manifest)
 		}
 	}
 
+	// A catalog row for another operating system must not reach the settings list.
+	storePluginManifests = selectCurrentOSManifests(storePluginManifests)
+
 	logger.Info(ctx, fmt.Sprintf("found %d plugins from stores", len(storePluginManifests)))
 	return storePluginManifests
+}
+
+// selectCurrentOSManifests keeps plugins this machine can run.
+func selectCurrentOSManifests(manifests []StorePluginManifest) []StorePluginManifest {
+	filtered := make([]StorePluginManifest, 0, len(manifests))
+	for _, manifest := range manifests {
+		if IsAnySupportedInCurrentOS(manifest.SupportedOS) {
+			filtered = append(filtered, manifest)
+		}
+	}
+	return filtered
 }
 
 func (s *Store) GetStorePluginManifest(ctx context.Context, store storeManifest) ([]StorePluginManifest, error) {
@@ -419,6 +446,10 @@ func (s *Store) installWithProgress(ctx context.Context, manifest StorePluginMan
 	// "loading number alternate abnormally" symptom reported in issue #4401.
 	s.installMu.Lock()
 	defer s.installMu.Unlock()
+
+	if !IsSupportedRuntime(string(manifest.Runtime)) {
+		return fmt.Errorf("plugin runtime %s is not available", manifest.Runtime)
+	}
 
 	logger.Info(ctx, fmt.Sprintf("start to install plugin %s(%s)", manifest.GetName(ctx), manifest.Version))
 
@@ -983,6 +1014,26 @@ func (s *Store) uninstallWithProgress(ctx context.Context, plugin *Instance, ski
 // lock itself. This lets InstallWithProgress call it internally without
 // deadlocking (InstallWithProgress already holds installMu).
 func (s *Store) uninstallLocked(ctx context.Context, plugin *Instance, skipCleanSetting bool, preserveCache bool, progressCallback UninstallProgressCallback) error {
+	// Compatibility plugins must not use the generic uninstall. Its failure path
+	// reloads the directory with ParseMetadata.
+	if plugin != nil {
+		for _, remover := range pluginRemovers {
+			handled, err := remover.Uninstall(ctx, plugin, skipCleanSetting, preserveCache, progressCallback)
+			if !handled {
+				continue
+			}
+			if err != nil {
+				logger.Error(ctx, fmt.Sprintf("failed to uninstall plugin %s(%s): %s", plugin.Metadata.GetName(ctx), plugin.Metadata.Version, err.Error()))
+				return err
+			}
+			reloadSettingPlugins(ctx)
+			return nil
+		}
+		if !IsSupportedRuntime(plugin.Metadata.Runtime) {
+			return fmt.Errorf("plugin runtime %s is not available", plugin.Metadata.Runtime)
+		}
+	}
+
 	logger.Info(ctx, fmt.Sprintf("start to uninstall plugin %s(%s)", plugin.Metadata.GetName(ctx), plugin.Metadata.Version))
 	pluginAlreadyUnloaded := false
 	reportProgress := func(key string, args ...any) {

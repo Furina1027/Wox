@@ -33,7 +33,10 @@ func (a *App) ensureSettingsWindow() (*woxui.ManagedWindow, error) {
 			Role:             woxui.WindowRoleApplication,
 			TitleBarControls: woxui.TitleBarControls{Height: launcherview.SettingsTitleBarHeight, Close: true, Minimize: true},
 			OnFrame:          host.Frame,
-			OnPointer:        host.Pointer,
+			OnPointer: func(event woxui.PointerEvent) {
+				host.Pointer(event)
+				a.finishSettingsPointer(event)
+			},
 			OnFocus: func(event woxui.FocusEvent) {
 				host.SetWindowFocused(event.Active)
 			},
@@ -42,23 +45,14 @@ func (a *App) ensureSettingsWindow() (*woxui.ManagedWindow, error) {
 				if a.hotkeyRecordingUsesSettingsWindow() && a.onSettingsWindowKey(event) {
 					return true
 				}
-				if host.Key(event) {
-					return true
-				}
-				return a.onSettingsWindowKey(event)
+				return a.dispatchWindowKey(event, host, "", a.requestSettingsClose, a.onSettingsWindowKey)
 			},
 			OnTextInput: func(event woxui.TextInputEvent) {
 				if !host.TextInput(event) {
 					a.onSettingsWindowTextInput(event)
 				}
 			},
-			OnCloseRequested: func() {
-				util.Go(a.lifecycleCtx, "close requested settings window", func() {
-					if err := a.closeSettings(); err != nil {
-						log.Printf("close requested settings window: %v", err)
-					}
-				})
-			},
+			OnCloseRequested: a.requestSettingsClose,
 			OnClosed: func() {
 				host.Dispose()
 				a.onSettingsWindowClosed()

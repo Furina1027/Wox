@@ -33,6 +33,8 @@ type PluginDto struct {
 	IsInstalled        bool
 	IsDisable          bool // only available when plugin is installed
 	IsUpgradable       bool
+	Store              string
+	HasNativeSettings  bool
 }
 
 type PluginSettingDto struct {

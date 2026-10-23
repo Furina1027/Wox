@@ -28,7 +28,7 @@ import (
 )
 
 const (
-	PluginID                        = "8a4b5c6d-7e8f-9a0b-1c2d-3e4f5a6b7c8d"
+	PluginID                        = common.ShellPluginID
 	ToolOpenAtDirectory             = "open_at_directory"
 	QueryContextWorkingDirectoryKey = "wox:shell:working_directory"
 
@@ -150,7 +150,7 @@ func (s *ShellPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 		},
@@ -347,8 +347,8 @@ func effectiveInterpreter(interpreter string, fallback string) string {
 	return getDefaultInterpreter()
 }
 
-// savedCommandScoreKey keeps global ranking stable while the visible last-run subtitle changes.
-func savedCommandScoreKey(alias string, interpreter string, workingDirectory string) string {
+// savedCommandIdentityKey keeps global ranking stable while the visible last-run subtitle changes.
+func savedCommandIdentityKey(alias string, interpreter string, workingDirectory string) string {
 	return strings.Join([]string{"shell", "saved", strings.ToLower(strings.TrimSpace(alias)), strings.TrimSpace(interpreter), strings.TrimSpace(workingDirectory)}, "\x1f")
 }
 
@@ -402,7 +402,6 @@ func (s *ShellPlugin) buildEmptyCommandResultWithTrigger(ctx context.Context, in
 		Title:      "i18n:plugin_shell_enter_command",
 		Icon:       shellIcon,
 		Score:      2000,
-		ScoreKey:   "shell:empty-command",
 		GroupScore: emptyCommandResultGroupScore,
 		Preview: plugin.WoxPreview{
 			PreviewType:    plugin.WoxPreviewTypeText,
@@ -1372,13 +1371,14 @@ func (s *ShellPlugin) queryHistory(ctx context.Context, interpreter string, trig
 		group, groupScore := s.getHistoryResultGroup(history.StartTime)
 
 		results = append(results, plugin.QueryResult{
-			Title:      title,
-			SubTitle:   subTitle,
-			Icon:       shellIcon,
-			Tails:      s.buildHistoryTails(ctx, history.Status),
-			Score:      s.getHistoryResultScore(history.StartTime),
-			Group:      group,
-			GroupScore: groupScore,
+			Title:       title,
+			SubTitle:    subTitle,
+			IdentityKey: history.ID,
+			Icon:        shellIcon,
+			Tails:       s.buildHistoryTails(ctx, history.Status),
+			Score:       s.getHistoryResultScore(history.StartTime),
+			Group:       group,
+			GroupScore:  groupScore,
 			Preview: plugin.WoxPreview{
 				PreviewType: previewType,
 				PreviewData: previewData,
@@ -1508,11 +1508,11 @@ func (s *ShellPlugin) Query(ctx context.Context, query plugin.Query) plugin.Quer
 
 	return plugin.NewQueryResponse([]plugin.QueryResult{
 		{
-			Title:    command,
-			SubTitle: subtitle,
-			Icon:     shellIcon,
-			Score:    100,
-			ScoreKey: savedCommandScoreKey(command, interpreter, workingDirectory),
+			Title:       command,
+			SubTitle:    subtitle,
+			Icon:        shellIcon,
+			Score:       100,
+			IdentityKey: savedCommandIdentityKey(command, interpreter, workingDirectory),
 			Preview: plugin.WoxPreview{
 				PreviewType:    plugin.WoxPreviewTypeText,
 				PreviewData:    i18n.GetI18nManager().TranslateWox(ctx, "plugin_shell_enter_to_execute"),
@@ -1656,11 +1656,11 @@ func (s *ShellPlugin) queryCommands(ctx context.Context, query plugin.Query, int
 		actions = append(actions, s.buildOpenInSystemTerminalAction(contextData), s.buildEditCommandAction(savedCommandData), s.buildDeleteConfiguredCommandAction(savedCommandData), s.buildRunWithInterpreterAction(contextData))
 
 		result := plugin.QueryResult{
-			Title:    cmd.Alias,
-			SubTitle: subtitle,
-			Icon:     shellIcon,
-			Score:    100 + int64(len(commands)-commandIndex),
-			ScoreKey: savedCommandScoreKey(cmd.Alias, commandInterpreter, strings.TrimSpace(cmd.WorkingDirectory)),
+			Title:       cmd.Alias,
+			SubTitle:    subtitle,
+			Icon:        shellIcon,
+			Score:       100 + int64(len(commands)-commandIndex),
+			IdentityKey: savedCommandIdentityKey(cmd.Alias, commandInterpreter, strings.TrimSpace(cmd.WorkingDirectory)),
 			Preview: plugin.WoxPreview{
 				PreviewType:    plugin.WoxPreviewTypeTerminal,
 				PreviewData:    s.buildTerminalPreviewData("", finalCommand, "idle"),
@@ -1682,6 +1682,7 @@ func (s *ShellPlugin) queryCommands(ctx context.Context, query plugin.Query, int
 }
 
 // executeCommandWithUpdateResult executes a shell command and updates metadata via UpdateResult.
+// User-requested commands are independent of the offline policy for Wox-managed networking.
 func (s *ShellPlugin) executeCommandWithUpdateResult(ctx context.Context, resultId string, data shellContextData) {
 	s.api.Log(ctx, plugin.LogLevelInfo, fmt.Sprintf("Executing shell command: %s with interpreter: %s", data.Command, data.Interpreter))
 	data.WorkingDirectory = s.resolveExecutionWorkingDirectory(ctx, data.WorkingDirectory, true)

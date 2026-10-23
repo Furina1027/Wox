@@ -21,6 +21,7 @@ import (
 	"wox/common"
 	"wox/common/icons"
 	"wox/i18n"
+	"wox/network"
 	"wox/setting"
 	"wox/setting/definition"
 	"wox/setting/validator"
@@ -53,9 +54,9 @@ const (
 	previewDataMaxSize           = 1024
 	maxCachedQueriesPerSession   = 32
 	globalQueryPluginScoreLimit  = 200
-	// rankAboveUsageScore sits above action history and below the query-pin boost.
+	// rankAboveUsageScore sits above action history. Query pins are a separate display tier.
 	rankAboveUsageScore int64 = 50000
-	fileSearchPluginID        = "979d6363-025a-4f51-88d3-0b04e9dc56bf"
+	fileSearchPluginID        = common.FileSearchPluginID
 )
 
 type debounceTimer struct {
@@ -172,9 +173,11 @@ type Manager struct {
 	applyResultBindings          ResultBindingApplier
 	runtimeTriggerRegistrationMu sync.Mutex
 	instances                    []*Instance
-	instancesMu                  sync.RWMutex
-	systemPluginsReady           chan struct{}
-	ui                           common.UI
+	// Mode transitions wait for in-flight loads before suspending their instances.
+	offlineLifecycle   sync.RWMutex
+	instancesMu        sync.RWMutex
+	systemPluginsReady chan struct{}
+	ui                 common.UI
 
 	// Query pipelines are concurrent in core even though UI displays only
 	// one active query. Key by session and query id so a late pipeline cannot
@@ -382,6 +385,11 @@ func (m *Manager) loadPlugins(ctx context.Context) error {
 
 	// load system plugin first
 	m.loadSystemPlugins(ctx)
+	return m.loadUserPlugins(ctx, false)
+}
+
+// loadUserPlugins restores installed plugins without changing their persisted enablement.
+func (m *Manager) loadUserPlugins(ctx context.Context, wait bool) error {
 	if util.IsThirdPartyPluginsDisabled() {
 		logger.Info(ctx, "troubleshooting mode: skipping third-party plugins and runtime hosts")
 		return nil
@@ -453,6 +461,19 @@ func (m *Manager) loadPlugins(ctx context.Context) error {
 		metaDataList = append(metaDataList, singleFileMetaDataList...)
 	}
 
+	for _, host := range AllHosts {
+		catalog, ok := host.(ExternalCatalog)
+		if !ok {
+			continue
+		}
+		discovered, discoverErr := catalog.DiscoverMetadata(ctx)
+		if discoverErr != nil {
+			logger.Error(ctx, fmt.Sprintf("failed to load %s plugins: %s", host.GetRuntime(ctx), discoverErr.Error()))
+			continue
+		}
+		metaDataList = append(metaDataList, discovered...)
+	}
+
 	uniqueMetadata := make([]Metadata, 0, len(metaDataList))
 	seenPluginIDs := make(map[string]Metadata, len(metaDataList))
 	for _, instance := range m.pluginInstancesSnapshot() {
@@ -471,27 +492,63 @@ func (m *Manager) loadPlugins(ctx context.Context) error {
 
 	logger.Info(ctx, fmt.Sprintf("start loading user plugins, found %d user plugins", len(metaDataList)))
 
+	var pending sync.WaitGroup
+	var loadMu sync.Mutex
+	var loadErrors []error
 	for _, host := range AllHosts {
-		util.Go(ctx, fmt.Sprintf("[%s] start host", host.GetRuntime(ctx)), func() {
-			newCtx := util.NewTraceContext()
-			hostErr := host.Start(newCtx)
-			if hostErr != nil {
-				logger.Error(newCtx, fmt.Errorf("[%s HOST] %w", host.GetRuntime(newCtx), hostErr).Error())
-				return
+		if network.IsOffline() {
+			for _, metadata := range metaDataList {
+				if strings.EqualFold(metadata.Runtime, string(host.GetRuntime(ctx))) {
+					if err := m.registerOfflinePlugin(ctx, host, metadata); err != nil {
+						util.GetLogger().Warn(ctx, err.Error())
+					}
+				}
 			}
-
+			continue
+		}
+		if wait {
+			hasPending := false
+			for _, metadata := range metaDataList {
+				if strings.EqualFold(metadata.Runtime, string(host.GetRuntime(ctx))) {
+					hasPending = true
+					break
+				}
+			}
+			if !hasPending {
+				continue
+			}
+		}
+		pending.Add(1)
+		util.Go(ctx, fmt.Sprintf("[%s] start host", host.GetRuntime(ctx)), func() {
+			defer pending.Done()
+			newCtx := util.NewTraceContext()
+			recordError := func(err error) {
+				loadMu.Lock()
+				loadErrors = append(loadErrors, err)
+				loadMu.Unlock()
+				if !network.IsOffline() {
+					util.GetLogger().Error(newCtx, err.Error())
+				}
+			}
+			if !host.IsStarted(newCtx) {
+				if err := host.Start(newCtx); err != nil {
+					recordError(err)
+					return
+				}
+			}
 			for _, metadata := range metaDataList {
 				if !strings.EqualFold(metadata.Runtime, string(host.GetRuntime(newCtx))) {
 					continue
 				}
-
-				loadErr := m.loadHostPlugin(newCtx, host, metadata)
-				if loadErr != nil {
-					logger.Error(newCtx, fmt.Errorf("[%s HOST] %w", host.GetRuntime(newCtx), loadErr).Error())
-					continue
+				if err := m.loadHostPlugin(newCtx, host, metadata); err != nil {
+					recordError(err)
 				}
 			}
 		})
+	}
+	if wait {
+		pending.Wait()
+		return errors.Join(loadErrors...)
 	}
 
 	return nil
@@ -578,6 +635,8 @@ func (m *Manager) loadHostPlugin(ctx context.Context, host Host, metadata Metada
 }
 
 func (m *Manager) loadHostPluginLocked(ctx context.Context, host Host, metadata Metadata) error {
+	m.offlineLifecycle.RLock()
+	defer m.offlineLifecycle.RUnlock()
 	// Installs and reloads must not bypass the startup-only troubleshooting mode.
 	if err := ensureThirdPartyPluginsEnabled(ctx); err != nil {
 		return err
@@ -676,8 +735,31 @@ func (m *Manager) LoadPlugin(ctx context.Context, pluginDirectory string) error 
 	return nil
 }
 
+// LoadRuntimePlugin loads metadata that did not come from ParseMetadata.
+// Compatibility layers use it because their plugin manifest is not a Wox plugin.json.
+func (m *Manager) LoadRuntimePlugin(ctx context.Context, metadata Metadata) error {
+	if err := ensureThirdPartyPluginsEnabled(ctx); err != nil {
+		return err
+	}
+	pluginHost, exist := lo.Find(AllHosts, func(item Host) bool {
+		return strings.EqualFold(string(item.GetRuntime(ctx)), metadata.Runtime)
+	})
+	if !exist {
+		return fmt.Errorf("unsupported runtime: %s", metadata.Runtime)
+	}
+	if !pluginHost.IsStarted(ctx) {
+		if err := pluginHost.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start host for runtime %s: %w", metadata.Runtime, err)
+		}
+	}
+	return m.loadHostPlugin(ctx, pluginHost, metadata)
+}
+
 // ensureThirdPartyPluginsEnabled also stops installers before they replace files that cannot be loaded in this session.
 func ensureThirdPartyPluginsEnabled(ctx context.Context) error {
+	if network.IsOffline() {
+		return network.ErrOffline
+	}
 	if util.IsThirdPartyPluginsDisabled() {
 		return errors.New(i18n.GetI18nManager().TranslateWox(ctx, "plugin_feedback_third_party_plugins_disabled"))
 	}
@@ -714,6 +796,11 @@ func (m *Manager) DisablePlugin(ctx context.Context, pluginId string) error {
 // EnablePlugin marks a plugin enabled and initializes its runtime if it was
 // previously deactivated by DisablePlugin.
 func (m *Manager) EnablePlugin(ctx context.Context, pluginId string) error {
+	if instance := m.GetPluginInstanceById(pluginId); instance != nil && instance.Host != nil {
+		if err := ensureThirdPartyPluginsEnabled(ctx); err != nil {
+			return err
+		}
+	}
 	pluginInstance := m.GetPluginInstanceById(pluginId)
 	if pluginInstance == nil {
 		return fmt.Errorf("can't find plugin")
@@ -741,7 +828,7 @@ func (m *Manager) deactivatePlugin(ctx context.Context, pluginInstance *Instance
 	defer pluginInstance.initLifecycleMu.Unlock()
 	pluginInstance.stopPluginTools()
 	initialized, _ := pluginInstance.initStatus()
-	if initialized {
+	if initialized && !(network.IsOffline() && pluginInstance.Host != nil) {
 		for _, callback := range pluginInstance.UnloadCallbacks {
 			callback(ctx)
 		}
@@ -750,7 +837,9 @@ func (m *Manager) deactivatePlugin(ctx context.Context, pluginInstance *Instance
 	pluginInstance.resetInitState()
 
 	if pluginInstance.Host != nil && pluginInstance.RuntimeLoaded {
-		pluginInstance.Host.UnloadPlugin(ctx, pluginInstance.Metadata)
+		if !network.IsOffline() {
+			pluginInstance.Host.UnloadPlugin(ctx, pluginInstance.Metadata)
+		}
 		pluginInstance.RuntimeLoaded = false
 		pluginInstance.Plugin = nil
 	}
@@ -759,6 +848,13 @@ func (m *Manager) deactivatePlugin(ctx context.Context, pluginInstance *Instance
 // activatePlugin loads host runtime state if needed and runs Init once for the
 // current enabled lifecycle.
 func (m *Manager) activatePlugin(ctx context.Context, pluginInstance *Instance) error {
+	m.offlineLifecycle.RLock()
+	defer m.offlineLifecycle.RUnlock()
+	if pluginInstance != nil && pluginInstance.Host != nil {
+		if err := ensureThirdPartyPluginsEnabled(ctx); err != nil {
+			return err
+		}
+	}
 	if pluginInstance == nil {
 		return fmt.Errorf("can't find plugin")
 	}
@@ -1047,6 +1143,10 @@ func (m *Manager) initPlugin(ctx context.Context, instance *Instance) {
 
 // initPluginLocked runs Init while the caller holds the instance lifecycle lock.
 func (m *Manager) initPluginLocked(ctx context.Context, instance *Instance) {
+	if network.IsOffline() && instance.Host != nil {
+		instance.finishInit(false, network.ErrOffline)
+		return
+	}
 	logger.Info(ctx, fmt.Sprintf("start init plugin: %s", instance.Metadata.GetName(ctx)))
 	instance.InitStartTimestamp = util.GetSystemTimestamp()
 	defer func() {
@@ -1332,6 +1432,9 @@ func pluginInstanceDisabled(instance *Instance) bool {
 }
 
 func (m *Manager) canOperateQuery(ctx context.Context, pluginInstance *Instance, query Query) bool {
+	if network.IsOffline() && pluginInstance.Host != nil {
+		return false
+	}
 	if pluginInstanceDisabled(pluginInstance) {
 		return false
 	}
@@ -1687,6 +1790,7 @@ func (m *Manager) finalizePluginQueryResponse(ctx context.Context, pluginInstanc
 	openPluginSettingActionUs := time.Since(openPluginSettingActionStart).Microseconds()
 	// Default and plugin actions often repeat the same icons across every result.
 	actionIconCache := make(map[common.WoxImage]common.WoxImage)
+	resultIconCache := make(map[common.WoxImage]common.WoxImage)
 	for i := range response.Results {
 		resultStart := util.GetSystemTimestamp()
 		resultTimingStart := time.Now()
@@ -1701,7 +1805,7 @@ func (m *Manager) finalizePluginQueryResponse(ctx context.Context, pluginInstanc
 		polishStart := util.GetSystemTimestamp()
 		polishTimingStart := time.Now()
 		var polishTiming timetracking.ResultPolishTiming
-		response.Results[i], polishTiming = m.polishResult(ctx, pluginInstance, query, response.Layout, response.Results[i], collectResultTiming, actionIconCache, "", aliasMatchNone)
+		response.Results[i], polishTiming = m.polishResult(ctx, pluginInstance, query, response.Layout, response.Results[i], collectResultTiming, actionIconCache, resultIconCache, "", aliasMatchNone)
 		polishCost := util.GetSystemTimestamp() - polishStart
 		polishCostUs := time.Since(polishTimingStart).Microseconds()
 		totalPolishCost += polishCost
@@ -1820,60 +1924,34 @@ func (m *Manager) getDefaultActions(ctx context.Context, pluginInstance *Instanc
 }
 
 func (m *Manager) getDefaultActionsWithOpenPluginSettingAction(ctx context.Context, pluginInstance *Instance, query Query, result QueryResult, sourceHash string, openPluginSettingAction QueryResultAction) (defaultActions []QueryResultAction) {
-	title := result.Title
-	subTitle := result.SubTitle
-	scoreKey := result.ScoreKey
-	resultHash := setting.NewResultHashFromParts(pluginInstance.Metadata.Id, title, subTitle, scoreKey)
+	// Pins and usage history share one identity. Translate first so an i18n title
+	// hashes the same way calculateResultScore does after polish.
+	scoreResult := result
+	scoreResult.Title = m.translatePlugin(ctx, pluginInstance, result.Title)
+	scoreResult.SubTitle = m.translatePlugin(ctx, pluginInstance, result.SubTitle)
+	resultHash := resultIdentityHash(pluginInstance.Metadata.Id, scoreResult)
 	settingManager := setting.GetSettingManager()
 	// Declare both actions first
 	var pinInQueryAction func(context.Context, ActionContext)
 	var unpinInQueryAction func(context.Context, ActionContext)
 
-	// Define pin in current query action
+	// Define pin in current query action. Refresh rebuilds scores so only this query moves the row up.
 	pinInQueryAction = func(ctx context.Context, actionContext ActionContext) {
-		settingManager.PinResult(ctx, pluginInstance.Metadata.Id, title, subTitle)
-
-		// Get API instance
+		settingManager.PinResult(ctx, resultHash, query.RawQuery)
 		api := NewAPI(pluginInstance)
 		api.Notify(ctx, "i18n:plugin_manager_pin_in_query_success")
-
-		// Get current result state
-		updatableResult := api.GetUpdatableResult(ctx, actionContext.ResultId)
-		if updatableResult == nil {
-			return // Result no longer visible
-		}
-
-		// Update the result to refresh UI
-		// Note: We don't need to manually add the pin tail here because:
-		// 1. GetUpdatableResult filters out system tails (including the pin icon)
-		// 2. PolishUpdatableResult will automatically add the pin tail back if this result is pinned
-		// 3. This ensures the pin tail is always managed by the system
-		api.UpdateResult(ctx, *updatableResult)
+		api.RefreshQuery(ctx, RefreshQueryParam{SelectedResultId: actionContext.ResultId})
 	}
 
-	// Define unpin from current query action
+	// Define unpin from current query action.
 	unpinInQueryAction = func(ctx context.Context, actionContext ActionContext) {
-		settingManager.UnpinResult(ctx, pluginInstance.Metadata.Id, title, subTitle)
-
-		// Get API instance
+		settingManager.UnpinResult(ctx, resultHash, query.RawQuery)
 		api := NewAPI(pluginInstance)
 		api.Notify(ctx, "i18n:plugin_manager_unpin_in_query_success")
-
-		// Get current result state
-		updatableResult := api.GetUpdatableResult(ctx, actionContext.ResultId)
-		if updatableResult == nil {
-			return // Result no longer visible
-		}
-
-		// Update the result to refresh UI
-		// Note: We don't need to manually remove the pin tail here because:
-		// 1. GetUpdatableResult filters out system tails (including the pin icon)
-		// 2. PolishUpdatableResult will NOT add the pin tail back if this result is no longer pinned
-		// 3. This ensures the pin tail is always managed by the system
-		api.UpdateResult(ctx, *updatableResult)
+		api.RefreshQuery(ctx, RefreshQueryParam{SelectedResultId: actionContext.ResultId})
 	}
 
-	if settingManager.IsPinedResult(ctx, pluginInstance.Metadata.Id, title, subTitle) {
+	if settingManager.IsPinedResult(ctx, resultHash, query.RawQuery) {
 		defaultActions = append(defaultActions, QueryResultAction{
 			Id:                     systemActionUnpinInQueryID,
 			Name:                   "i18n:plugin_manager_unpin_in_query",
@@ -1900,9 +1978,7 @@ func (m *Manager) getDefaultActionsWithOpenPluginSettingAction(ctx context.Conte
 		api.Notify(ctx, "i18n:plugin_manager_reset_ranking_success")
 		api.RefreshQuery(ctx, RefreshQueryParam{PreserveSelectedIndex: true})
 	}
-	actionedScore := m.calculateResultScore(ctx, pluginInstance.Metadata.Id, QueryResult{
-		Title: title, SubTitle: subTitle, ScoreKey: scoreKey,
-	}, query.RawQuery)
+	actionedScore := m.calculateResultScore(ctx, pluginInstance.Metadata.Id, scoreResult, query.RawQuery)
 	defaultActions = append(defaultActions, QueryResultAction{
 		Id:                     systemActionResetRankingID,
 		Name:                   "i18n:plugin_manager_reset_ranking",
@@ -2241,14 +2317,14 @@ func limitGlobalQueryPluginScore(query Query, score int64) int64 {
 	return globalQueryPluginScoreLimit
 }
 
-func resultScoreHash(pluginId string, result QueryResult) setting.ResultHash {
-	return setting.NewResultHashFromParts(pluginId, result.Title, result.SubTitle, result.ScoreKey)
+func resultIdentityHash(pluginId string, result QueryResult) setting.ResultHash {
+	return setting.NewResultHashFromParts(pluginId, result.Title, result.SubTitle, result.IdentityKey)
 }
 
 func (m *Manager) calculateResultScore(ctx context.Context, pluginId string, result QueryResult, currentQuery string) int64 {
 	var score int64 = 0
 
-	resultHash := resultScoreHash(pluginId, result)
+	resultHash := resultIdentityHash(pluginId, result)
 	woxSetting := setting.GetSettingManager().GetWoxSetting(ctx)
 	actionResults, ok := woxSetting.ActionedResults.Get().Load(resultHash)
 	if !ok {
@@ -2576,6 +2652,13 @@ func (m *Manager) registerLazyResultIcon(ctx context.Context, pluginInstance *In
 	// The authorization token is query-scoped, while the source hash is stable
 	// across queries so UI can reuse an already decoded icon.
 	cacheKey := fmt.Sprintf("%s-%s-%d", util.Md5([]byte(cacheScope)), normalized.Hash(), size)
+	if normalized.ImageType == common.WoxImageTypeFileIcon {
+		// Deferred file icons have not acquired the OS cache's versioned path yet.
+		// Match its source-mtime invalidation so an app update cannot reuse old UI pixels.
+		if info, err := os.Stat(normalized.ImageData); err == nil {
+			cacheKey += fmt.Sprintf("-%d", info.ModTime().UnixNano())
+		}
+	}
 	return common.NewWoxImageLazyLoad(token, cacheKey, icons.Get(icons.StatusImagePlaceholder), size)
 }
 
@@ -2954,9 +3037,8 @@ func normalizeQueryResultDragData(dragData *QueryResultDragData) *QueryResultDra
 		if cleanPath == "." || !filepath.IsAbs(cleanPath) {
 			continue
 		}
-		if _, err := os.Stat(cleanPath); err != nil {
-			continue
-		}
+		// Existence is checked when native dragging actually starts. Probing every
+		// displayed result adds synchronous filesystem I/O to ordinary searches.
 		files = append(files, cleanPath)
 	}
 	if len(files) == 0 {
@@ -2978,6 +3060,14 @@ func compareQueryResultCachesForDisplay(a *QueryResultCache, b *QueryResultCache
 		}
 		return 1
 	}
+	// Pin is its own tier. Plugin scores, such as clipboard copy times, stay inside
+	// that tier and only order pins against other pins.
+	if aPinned, bPinned := queryResultPinned(a.Result), queryResultPinned(b.Result); aPinned != bPinned {
+		if aPinned {
+			return -1
+		}
+		return 1
+	}
 	switch {
 	case a.Result.Score > b.Result.Score:
 		return -1
@@ -2985,8 +3075,20 @@ func compareQueryResultCachesForDisplay(a *QueryResultCache, b *QueryResultCache
 		return 1
 	}
 
+	if len(a.Result.Title) != len(b.Result.Title) {
+		if len(a.Result.Title) < len(b.Result.Title) {
+			return -1
+		}
+		return 1
+	}
 	if diff := strings.Compare(a.Result.Title, b.Result.Title); diff != 0 {
 		return diff
+	}
+	if len(a.Result.SubTitle) != len(b.Result.SubTitle) {
+		if len(a.Result.SubTitle) < len(b.Result.SubTitle) {
+			return -1
+		}
+		return 1
 	}
 	if diff := strings.Compare(a.Result.SubTitle, b.Result.SubTitle); diff != 0 {
 		return diff
@@ -3008,7 +3110,7 @@ func compareQueryResultCachesForDisplay(a *QueryResultCache, b *QueryResultCache
 }
 
 // BuildQueryResultsSnapshot builds a snapshot of all cached query results for the given session and query id.
-// Results are grouped by their group name, and both groups and results within groups are sorted by score.
+// Query pins come first. Remaining results are grouped by name, and both groups and results within groups are sorted by score.
 func (m *Manager) BuildQueryResultsSnapshot(sessionId string, queryId string) []QueryResultUI {
 	return m.buildQueryResultsSnapshot(sessionId, queryId, nil)
 }
@@ -3085,13 +3187,27 @@ func (m *Manager) buildQueryResultsSnapshot(sessionId string, queryId string, sh
 		return finalResults
 	}
 
+	// Pins leave their group and stay above every group header. Otherwise a pinned
+	// clipboard row remains inside Today, where a later copy's timestamp still
+	// sorts first, and an older day group would keep the pin below Today.
 	groupScores := map[string]int64{}
+	var pinnedResults []*QueryResultCache
+	groupedResults := make(map[string][]*QueryResultCache)
 	for _, resultCache := range resultCaches {
+		if queryResultPinned(resultCache.Result) {
+			pinnedResults = append(pinnedResults, resultCache)
+			continue
+		}
 		result := resultCache.Result
 		if score, ok := groupScores[result.Group]; !ok || result.GroupScore > score {
 			groupScores[result.Group] = result.GroupScore
 		}
+		groupedResults[result.Group] = append(groupedResults[result.Group], resultCache)
 	}
+	// Every pin is already in the same tier, so this keeps their original score order.
+	sort.SliceStable(pinnedResults, func(i, j int) bool {
+		return compareQueryResultCachesForDisplay(pinnedResults[i], pinnedResults[j]) < 0
+	})
 
 	var groups []string
 	for group := range groupScores {
@@ -3106,12 +3222,6 @@ func (m *Manager) buildQueryResultsSnapshot(sessionId string, queryId string, sh
 		return scoreA > scoreB
 	})
 
-	groupedResults := make(map[string][]*QueryResultCache)
-	for _, result := range resultCaches {
-		group := result.Result.Group
-		groupedResults[group] = append(groupedResults[group], result)
-	}
-
 	for group := range groupedResults {
 		groupResults := groupedResults[group]
 		sort.Slice(groupResults, func(i, j int) bool {
@@ -3122,6 +3232,9 @@ func (m *Manager) buildQueryResultsSnapshot(sessionId string, queryId string, sh
 
 	finalResults := make([]QueryResultUI, 0, len(aliasResults)+len(resultCaches)+len(groups))
 	for _, resultCache := range aliasResults {
+		finalResults = append(finalResults, m.buildResultUI(resultCache, queryId))
+	}
+	for _, resultCache := range pinnedResults {
 		finalResults = append(finalResults, m.buildResultUI(resultCache, queryId))
 	}
 	for _, group := range groups {
@@ -3159,12 +3272,12 @@ func (m *Manager) PolishResult(ctx context.Context, pluginInstance *Instance, qu
 
 // polishResultWithSource publishes restore identity together with the cached result.
 func (m *Manager) polishResultWithSource(ctx context.Context, pluginInstance *Instance, query Query, layout QueryLayout, result QueryResult, sourceHash string, match aliasMatchKind) QueryResult {
-	result, timing := m.polishResult(ctx, pluginInstance, query, layout, result, false, nil, sourceHash, match)
+	result, timing := m.polishResult(ctx, pluginInstance, query, layout, result, false, nil, nil, sourceHash, match)
 	m.logPolishResultTiming(ctx, query, queryDiagnosticPluginLabel(pluginInstance), result, timing)
 	return result
 }
 
-func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, query Query, layout QueryLayout, result QueryResult, collectIconTiming bool, actionIconCache map[common.WoxImage]common.WoxImage, sourceHash string, match aliasMatchKind) (QueryResult, timetracking.ResultPolishTiming) {
+func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, query Query, layout QueryLayout, result QueryResult, collectIconTiming bool, actionIconCache, resultIconCache map[common.WoxImage]common.WoxImage, sourceHash string, match aliasMatchKind) (QueryResult, timetracking.ResultPolishTiming) {
 	polishStart := util.GetSystemTimestamp()
 	polishTimingStart := time.Now()
 	var IconConversion timetracking.IconConversionTimingSummary
@@ -3223,7 +3336,17 @@ func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, qu
 	ResultIconType := result.Icon.ImageType
 	resultIconStart := util.GetSystemTimestamp()
 	resultIconTimingStart := time.Now()
-	result.Icon = m.convertResultIconWithRecorder(ctx, pluginInstance, query, layout, result.Id, result.Title, result.Icon, iconRecorder)
+	sourceIcon := result.Icon
+	if converted, found := resultIconCache[sourceIcon]; found {
+		result.Icon = converted
+	} else {
+		result.Icon = m.convertResultIconWithRecorder(ctx, pluginInstance, query, layout, result.Id, result.Title, sourceIcon, iconRecorder)
+		// This batch has one plugin/layout/size. Share ordinary conversions only:
+		// lazy icons carry per-result tokens and must retain distinct ownership.
+		if resultIconCache != nil && len(resultIconCache) < 128 && result.Icon.ImageType != common.WoxImageTypeLazyLoad {
+			resultIconCache[sourceIcon] = result.Icon
+		}
+	}
 	ResultIconCost := util.GetSystemTimestamp() - resultIconStart
 	ResultIconCostUs := time.Since(resultIconTimingStart).Microseconds()
 	ConvertedResultIconType := result.Icon.ImageType
@@ -3436,14 +3559,10 @@ func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, qu
 	AutoScoreCostUs := time.Since(autoScoreTimingStart).Microseconds()
 	favoriteStart := util.GetSystemTimestamp()
 	favoriteTimingStart := time.Now()
-	// check if the user pinned this result in the current query
-	// a pinned result will not be affected by ignoreAutoScore setting, except on the MRU page where MRU score owns ranking.
-	isPinned := !isMRUQuery && setting.GetSettingManager().IsPinedResult(ctx, pluginInstance.Metadata.Id, result.Title, result.SubTitle)
+	// A pin applies only to the query text it was saved with.
+	// It still ignores ignoreAutoScore, except on the MRU page where MRU score owns ranking.
+	isPinned := !isMRUQuery && setting.GetSettingManager().IsPinedResult(ctx, resultIdentityHash(pluginInstance.Metadata.Id, result), query.RawQuery)
 	if isPinned {
-		pinScore := int64(100000)
-		logger.Debug(ctx, fmt.Sprintf("<%s> result(%s) is pinned in current query, add score: %d", pluginInstance.GetName(ctx), result.Title, pinScore))
-		result.Score += pinScore
-
 		// Add pin icon to tails if not already present
 		hasPinTail := false
 		for _, tail := range result.Tails {
@@ -3453,12 +3572,7 @@ func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, qu
 			}
 		}
 		if !hasPinTail {
-			result.Tails = append(result.Tails, QueryResultTail{
-				Type:         QueryResultTailTypeImage,
-				Image:        icons.Get(icons.ActionPin),
-				ContextData:  common.ContextData{favoriteTailContextDataKey: favoriteTailContextDataValue}, // Use ContextData to identify the pin tail
-				IsSystemTail: true,                                                                         // Mark as system tail so it will be filtered out in GetUpdatableResult
-			})
+			result.Tails = append(result.Tails, pinnedInQueryTail(ctx))
 		}
 	}
 	FavoriteCost := util.GetSystemTimestamp() - favoriteStart
@@ -3466,6 +3580,11 @@ func (m *Manager) polishResult(ctx context.Context, pluginInstance *Instance, qu
 
 	devScoreTailStart := util.GetSystemTimestamp()
 	devScoreTailTimingStart := time.Now()
+	if result.isFallback {
+		// Apply after usage and navigation boosts so late ordinary results sort ahead
+		// of provisional fallback rows in both the UI response and cached snapshots.
+		result.Score = -1
+	}
 	result.Tails = m.appendDevScoreTail(ctx, result.Tails, result.Score)
 	sourceHash = resolveResultSourceHash(pluginInstance, query, result, sourceHash)
 	m.applyResultBindingTitleTags(ctx, pluginInstance, query, &result, sourceHash)
@@ -3845,8 +3964,8 @@ func (m *Manager) PolishUpdatableResult(ctx context.Context, pluginInstance *Ins
 			}
 		}
 
-		// Add pin icon to tails if this result is pinned in the current query
-		isPinned := setting.GetSettingManager().IsPinedResult(ctx, pluginInstance.Metadata.Id, resultCache.Result.Title, resultCache.Result.SubTitle)
+		// Add pin icon to tails if this result is pinned for the current query text.
+		isPinned := !resultCache.Query.Env.IsMRU && setting.GetSettingManager().IsPinedResult(ctx, resultIdentityHash(pluginInstance.Metadata.Id, resultCache.Result), resultCache.Query.RawQuery)
 		if isPinned {
 			// Check if pin tail already exists
 			hasPinTail := false
@@ -3857,12 +3976,7 @@ func (m *Manager) PolishUpdatableResult(ctx context.Context, pluginInstance *Ins
 				}
 			}
 			if !hasPinTail {
-				tails = append(tails, QueryResultTail{
-					Type:         QueryResultTailTypeImage,
-					Image:        icons.Get(icons.ActionPin),
-					ContextData:  common.ContextData{favoriteTailContextDataKey: favoriteTailContextDataValue}, // Use ContextData to identify the pin tail
-					IsSystemTail: true,                                                                         // Mark as system tail so it will be filtered out in GetUpdatableResult
-				})
+				tails = append(tails, pinnedInQueryTail(ctx))
 			}
 		}
 
@@ -3873,7 +3987,8 @@ func (m *Manager) PolishUpdatableResult(ctx context.Context, pluginInstance *Ins
 	}
 
 	// Translate preview properties if present
-	if result.Preview != nil {
+	_, scriptUpdate, _ := WebViewScriptUpdate(result.Preview)
+	if result.Preview != nil && !scriptUpdate {
 		preview := *result.Preview
 		if shouldHidePreviewForGlobalQuery(resultCache.Query, preview) {
 			preview = WoxPreview{}
@@ -3932,6 +4047,28 @@ func (m *Manager) serializeContextData(contextData map[string]string) string {
 		return ""
 	}
 	return string(data)
+}
+
+// queryResultPinned reports the query-pin tail attached during polish.
+func queryResultPinned(result QueryResult) bool {
+	for _, tail := range result.Tails {
+		if tail.ContextData[favoriteTailContextDataKey] == favoriteTailContextDataValue {
+			return true
+		}
+	}
+	return false
+}
+
+// pinnedInQueryTail marks a result pinned to the current query.
+// ContextData identifies this system tail, and IsSystemTail keeps it out of plugin updates.
+func pinnedInQueryTail(ctx context.Context) QueryResultTail {
+	return QueryResultTail{
+		Type:         QueryResultTailTypeImage,
+		Image:        icons.Get(icons.ActionPin),
+		Tooltip:      i18n.GetI18nManager().TranslateWox(ctx, "plugin_manager_pin_in_query"),
+		ContextData:  common.ContextData{favoriteTailContextDataKey: favoriteTailContextDataValue},
+		IsSystemTail: true,
+	}
 }
 
 func (m *Manager) appendDevScoreTail(ctx context.Context, tails []QueryResultTail, score int64) []QueryResultTail {
@@ -4387,6 +4524,7 @@ func (m *Manager) QueryFallback(ctx context.Context, query Query, queryPlugin *I
 			if v, ok := pluginInstance.Plugin.(FallbackSearcher); ok {
 				fallbackResults := v.QueryFallback(ctx, query)
 				for _, fallbackResult := range fallbackResults {
+					fallbackResult.isFallback = true
 					polishedFallbackResult := m.PolishResult(ctx, pluginInstance, query, QueryLayout{}, fallbackResult)
 					queryResults = append(queryResults, polishedFallbackResult)
 				}
@@ -4755,6 +4893,9 @@ func (m *Manager) ExecuteAction(ctx context.Context, sessionId string, queryId s
 		return fmt.Errorf("result cache not found for result id (execute action): %s", resultId)
 	}
 
+	if network.IsOffline() && resultCache.PluginInstance.Host != nil {
+		return network.ErrOffline
+	}
 	// Find the action in cache
 	var actionCache *QueryResultAction
 	for i := range resultCache.Result.Actions {
@@ -4793,6 +4934,10 @@ func (m *Manager) SubmitFormAction(ctx context.Context, sessionId string, queryI
 	resultCache, found := m.findResultCacheInSession(sessionId, queryId, resultId)
 	if !found {
 		return fmt.Errorf("result cache not found for result id (submit form action): %s", resultId)
+	}
+
+	if network.IsOffline() && resultCache.PluginInstance.Host != nil {
+		return network.ErrOffline
 	}
 
 	var actionCache *QueryResultAction
@@ -4838,7 +4983,7 @@ func (m *Manager) postExecuteAction(ctx context.Context, resultCache *QueryResul
 
 	// Ranking history describes how often a result is used, so maintenance actions
 	// that only change Wox configuration must not boost the result they were run from.
-	scoreHash := resultScoreHash(meta.Id, resultCache.Result)
+	scoreHash := resultIdentityHash(meta.Id, resultCache.Result)
 	setting.GetSettingManager().AddActionedResultByHash(ctx, scoreHash, resultCache.Query.RawQuery)
 
 	// Add to MRU if plugin supports it
@@ -5365,6 +5510,9 @@ func (m *Manager) normalizeGlanceItem(ctx context.Context, pluginInstance *Insta
 }
 
 func (m *Manager) ExecuteGlanceAction(ctx context.Context, pluginId string, glanceId string, actionId string) error {
+	if instance := m.GetPluginInstanceById(pluginId); network.IsOffline() && instance != nil && instance.Host != nil {
+		return network.ErrOffline
+	}
 	action, found := m.glanceActions.Load(glanceActionCacheKey(pluginId, glanceId, actionId))
 	if !found {
 		return fmt.Errorf("glance action not found: %s/%s/%s", pluginId, glanceId, actionId)
@@ -5441,6 +5589,9 @@ func (m *Manager) ExecuteToolbarMsgAction(ctx context.Context, sessionId string,
 		return fmt.Errorf("toolbar msg not found: %s", toolbarMsgId)
 	}
 
+	if instance := m.GetPluginInstanceById(entry.PluginId); network.IsOffline() && instance != nil && instance.Host != nil {
+		return network.ErrOffline
+	}
 	action, found := entry.Actions[actionId]
 	if !found {
 		return fmt.Errorf("toolbar msg action not found: %s", actionId)

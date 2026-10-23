@@ -12,13 +12,23 @@ macOS caption controls use AppKit's standard window buttons through `WindowOptio
 
 ## Architecture contract
 
-The portable Go layer owns widget layout, focus routing, text editing state, scrolling, Wox protocol DTOs, query behavior, previews, actions, and settings pages. Platform files are deliberately thin and own only the native window/event loop, renderer submission, font measurement, clipboard, file dialogs, external browser dispatch, and IME integration:
+`runtime` keeps the stable UI API as a small facade. Implementations, native bridges and tests are grouped under its `internal/input`, `internal/graphics`, `internal/capture`, `internal/window` and `internal/webview` directories. See [runtime layout](runtime/README.md) for responsibilities and dependency direction.
+
+The portable Go layer owns widget layout, focus routing, text editing state, scrolling, Wox protocol DTOs, query behavior, previews, actions, and settings pages. Platform files are deliberately thin and own only the native window/event loop, renderer submission, font measurement, clipboard thread dispatch, file dialogs, external-link thread dispatch, and IME integration:
 
 - Windows: Win32 + Direct2D/DirectWrite.
 - macOS: AppKit + CoreGraphics/CoreText.
 - Linux: GTK3 + GtkGLArea/OpenGL/Pango, with layer-shell and WebKitGTK used when available.
 
+`util/clipboard` owns clipboard formats, native bridges, prepared image resources, promised-format providers, and exit persistence. Runtime window methods are thin adapters: they prepare through that package and dispatch publication to the window's UI thread with a Windows HWND or Linux display capability. Runtime native headers and implementations contain no clipboard-specific symbols or includes. Windows prepares detached DIB and PNG handles before queuing the short commit; prepared resources serialize publication and teardown. The UI manager supplies generic thread dispatch to `clipboard.Flush` before normal exit. See [clipboard ownership](../util/clipboard/README.md).
+
+`util/hotkey` owns shared shortcut parsing and modifier aliases, with canonical key names in `util/keyboard`; runtime only maps normal combinations to UI key events. Global registration keeps its native key support and special trigger policies. `util/browser` owns external-link validation, launch policy, and native bridges; runtime supplies owner handles and GUI-thread dispatch. `util/shell` owns Windows owner-aware shell execution. `util/window` owns the shared Windows input-queue attachment primitive, while runtime retains Wox window activation, visibility, and editor focus policy. These utility packages have no UI imports or native runtime-header dependencies.
+
+Windows desktop capture exposes immutable packed BGRX pixels. Cropped RGBA copies clip physical coordinates and row lengths in Go, then convert channels with the native packed-row primitive, including forced opaque alpha for the capture's padding byte. This keeps full-desktop scene detachment from becoming a per-pixel Go loop when debugging disables compiler optimization.
+
 Display-list and widget changes must compile unchanged on all three platforms. A platform-specific feature should first expose a small capability on `Window`; business widgets must not import Win32, AppKit, GTK, or renderer APIs.
+
+Screenshot-specific native sessions and object selection belong to [`screenshot`](screenshot/README.md), alongside the portable editor and capture workflow. That package owns AX/UIA/AT-SPI traversal, query scheduling, selection hierarchy, inspector chrome, and selection overlays. Its platform adapters depend on runtime's general window, capture, main-thread, and coordinate primitives. Runtime must not import the screenshot package or include its native headers; native feature state and tests stay with the feature.
 
 System WebView previews keep their public facade on `runtime.Window`, while `runtime/internal/webview` owns validation, visibility, navigation, pointer forwarding, and reset/close lifecycle. Platform host adapters only translate that driver contract to WebView2, WKWebView, or WebKitGTK and must not leak native engine types into launcher or widget packages.
 
@@ -28,11 +38,15 @@ The widget Host supports incremental retained `Stateful` elements alongside lega
 
 List result gutters are fixed outside the scrolling rows. Window sizing and list composition share the same resolved padding: `ResultContainerPaddingTop/Bottom` frame the viewport, and `AppPaddingBottom` is added below results only when neither a toolbar nor a bottom query box owns that edge. The result-count budget applies to row content; group headers add their own height without consuming a result slot. Selection following and quick selection use the inner viewport without padding. Lists with a bottom gutter stop painting at that viewport; edge-to-edge lists can extend behind the toolbar.
 
+Explicit query refreshes retain the visible result snapshot for up to 400 ms while buffering only the newest partial response. A final response or a partial response whose logical result-area height reaches the retained height commits immediately. The deadline commits the buffered response, including its layout, refinements, and context; if none arrived, it enters the normal waiting state. Refresh and window sizing share the same list/grid geometry calculation. New query generations cancel the refresh buffer; ordinary typed queries keep their existing short transition and display their first response immediately.
+
 ## Incremental rendering scope
 
 Fine-grained layout invalidation, `Boundary` decomposition, and repaint-region tuning target the Launcher window. Launcher interactions are continuous and latency-sensitive, so query editing, list and grid result fields, Glance, previews, and action surfaces should invalidate the smallest stable visual owner that actually changed.
 
 Settings and other secondary pages are low-frequency surfaces and do not require per-field incremental rendering. Full-page or full-window refreshes are acceptable there; do not add fine-grained boundaries solely for those pages unless profiling demonstrates a user-visible performance problem. Shared widgets must remain correct in every window, but Launcher is the optimization target.
+
+Plugin form save state protects only editable setting values. Setting actions keep their progress and errors in the plugin controller independently of the form, so a catalog refresh or form replacement cannot discard an operation. When edits or a value save retain the form, display-only definitions still refresh using the shared form editability classification; editable definitions and editor state remain stable until the save completes.
 
 Settings, account, theme, resource catalogs, and other UI domains use typed services directly. The only production loopback HTTP surface is `appcontrol`; automation has a separate authenticated endpoint that exists only in `wox_automation` builds. Production builds register no UI business routes.
 
@@ -59,8 +73,8 @@ These numbers are comparison points rather than a CI budget because macOS, displ
 
 The memory reduction depends on four decisions:
 
-- The [native renderer](runtime/native_darwin.m) uses AppKit, CoreGraphics, CoreText, and IOSurface without creating a Metal device, command queue, shader library, drawable pool, or texture caches for the launcher.
-- [Rendering](runtime/window_darwin.go) keeps active triple-buffer behavior, then trims only unused surfaces after 250 ms of visible inactivity. The visible idle pool retains the presented surface and one reusable current-size back buffer. Hiding releases the complete pool, including the native hide-on-blur path, and queued frames cannot recreate surfaces until the window is visible again. A surface is removable only when its presentation reference count is zero and `IOSurfaceIsInUse` is false; stale-size surfaces are removed first, and retries are bounded.
+- The [native renderer](runtime/internal/window/native_darwin.m) uses AppKit, CoreGraphics, CoreText, and IOSurface without creating a Metal device, command queue, shader library, drawable pool, or texture caches for the launcher.
+- [Rendering](runtime/internal/window/window_darwin.go) keeps active triple-buffer behavior, then trims only unused surfaces after 250 ms of visible inactivity. The visible idle pool retains the presented surface and one reusable current-size back buffer. Hiding releases the complete pool, including the native hide-on-blur path, and queued frames cannot recreate surfaces until the window is visible again. A surface is removable only when its presentation reference count is zero and `IOSurfaceIsInUse` is false; stale-size surfaces are removed first, and retries are bounded.
 - [`system_profiler` discovery](../plugin/system/app/app_darwin.go) contributes application paths to the shared application cache instead of reparsing every returned bundle. Localized names are read from `Info.plist`, `InfoPlist.loctable`, root `InfoPlist.strings`, and `.lproj` strings without constructing one `NSBundle` per application. Cache freshness includes those files, the resolved icon source, and the preferred macOS languages. On the reference machine this reduced the post-index native heap from approximately 256 `NSBundle` and 258 `CFBundle` instances to 8 and 12.
 - [Process startup](../main.go) uses `GOGC=50` when the environment does not provide `GOGC`; this heap-growth policy is shared across platforms, while the reference measurements in this section are macOS-only. The override remains available for diagnosis. In the final interleaved macOS release comparison, the default settled at 90.9 MB versus 96.8 MB with `GOGC=100`; query p95 was 6 ms versus 7 ms, and GC pause p95 remained approximately 0.5 ms.
 
@@ -70,11 +84,50 @@ For later comparisons, stop every other Wox instance and sample the same release
 
 ## Windows hidden memory lifecycle
 
-The September 2026 Windows investigation (Intel integrated GPU, release-style build, private working set as the metric) measured a hidden idle footprint of 63-70 MB. Roughly 29 MB of that was the NT process heap, of which only about 12 MB was still allocated: a show/hide cycle allocates and frees around 25 MB of Direct2D, DirectWrite, and user-mode driver blocks, and the freed pages stay committed and resident because roughly 30,000 small long-lived blocks fragment them. `HeapCompact` does not return them. Hiding runs two staged releases in [`manager.go`](manager.go) and [`window_windows.go`](runtime/window_windows.go): `debug.FreeOSMemory` plus cache drops after 10 seconds, and `IDXGIDevice3::Trim` after 30 seconds. Both lower committed memory, so the Task Manager number they produce is real.
+For memory measurements under Delve, set `_NO_DEBUG_HEAP=1` before starting the
+debugger. Windows' debug heap changes allocation and fragmentation behavior;
+its growth must not be attributed to release builds. Keep compilation settings,
+heap sampling, workload and debugger mode identical across comparisons.
+Automation builds expose `perf.memory_snapshot` to read Go statistics and native
+resident-page ownership without showing the launcher. Its optional `profilePath`
+writes a heap profile without forcing GC; use the existing hidden cleanup and
+wait at least 45 seconds before collecting comparable checkpoints. The native
+free-heap counter intersects free blocks with resident pages, so nonresident
+committed free space is not subtracted from the resident heap.
+
+The September 2026 Windows investigation (Intel integrated GPU, release-style build, private working set as the metric) measured a hidden idle footprint of 63-70 MB. Roughly 29 MB of that was the NT process heap, of which only about 12 MB was still allocated: a show/hide cycle allocates and frees around 25 MB of Direct2D, DirectWrite, and user-mode driver blocks, and the freed pages stay committed and resident because roughly 30,000 small long-lived blocks fragment them. `HeapCompact` does not return them. Hiding runs two staged releases in [`manager.go`](manager.go) and [`window_windows.go`](runtime/internal/window/window_windows.go): `debug.FreeOSMemory` plus cache drops after 10 seconds, and `IDXGIDevice3::Trim` after 30 seconds. Both lower committed memory, so the Task Manager number they produce is real.
 
 Do not add `SetProcessWorkingSetSize(-1, -1)` / `EmptyWorkingSet` to this sequence. It was tried and drops the private working set to a few MB, but commit charge does not move: the pages only migrate to the standby list and fault back in on the next show, or turn into page-file hard faults under memory pressure. It changes the reported number without reducing memory use, so it is not an acceptable optimization for Wox.
 
-Forcing WARP (`WOX_WINDOWS_FORCE_WARP=1`) was 10 MB lower when hidden and about 40 MB lower while visible because the hardware user-mode driver keeps heap and anonymous allocations the trim cannot reach; it is not used by default because it moves rendering to the CPU.
+File search persists its query arrays in read-only index mappings rather than
+retaining heap copies. Its long-hide release targets only those clean file pages,
+under the store lease lock; it never trims the process-wide private working set.
+Report the reduced private commit separately from file-page residency: dropping
+mapped pages can leave them in the OS file cache, and the next query pays for
+faulting them back. Include first-after-idle latency in comparisons.
+
+Settings > Interface offers **Use software rendering (CPU)** (`UseSoftwareRendering`), a local-only preference applied after settings/privacy restoration and before the first window opens. Changes take effect after restarting Wox; the supervisor does not choose the rendering backend. Windows uses WARP; Linux requests Mesa software OpenGL (Mesa software drivers must be installed); macOS already rasterizes its IOSurfaces on the CPU, so both settings use that backend. This controls Wox UI drawing, not the desktop compositor or embedded web pages.
+
+In earlier measurements, using WARP was 10 MB lower when hidden and about 40 MB lower while visible because the hardware user-mode driver keeps heap and anonymous allocations the trim cannot reach; it is not used by default because it moves rendering to the CPU.
+
+On Windows, a final hidden check at 35 seconds requests `HeapOptimizeResources`
+after the independently scheduled renderer teardown. This asks the heap manager
+to decommit unused LFH caches without invalidating live allocations or evicting
+the process working set. It cannot reclaim pages still shared with live blocks.
+Before this request, SQLite is trimmed again because background indexing and
+screenshot persistence can refill its page caches after the 10-second trim.
+The automation-only `perf.native_heap_optimize` method allows a before/after
+measurement independent of the hidden lifecycle.
+
+Native thread pressure also survives hiding: spare Go OS threads retain stacks
+and loaded DLLs' thread-local storage. Application indexing limits concurrent
+path groups, and Windows emoji rendering queues before acquiring an OS thread.
+Emoji COM initialization, rendering, object release, and apartment teardown stay
+on that thread. Do not terminate runtime, plugin pipe, input method, or window
+threads as an idle-memory trim; their owners must control their lifetime.
+The automation-only `perf.thread_snapshot` writes goroutine and thread creation
+profiles and returns SQLite allocation/pool statistics. `perf.sqlite_release`
+measures the effect of the existing SQLite cache trim without closing pools.
 
 ### Hidden-state ownership rules (September 22, 2026)
 
@@ -98,7 +151,18 @@ Rules that follow from it:
 - Result actions capture identifiers, not domain values. The theme plugin used to capture whole `common.Theme` values (and, for MRU restore, a pointer into the entire installed catalog) in action closures that live in the query and MRU caches.
 - Many-record plugin data is one plugin setting per record (`note:{id}`, `chat:{id}`), loaded on demand with only summaries resident. The AI Chat history moved from one `ai_chats` array to `chat:{id}` keys in the `20260922_split_ai_chats` migration; per-key settings also let Cloud Sync merge records edited on different devices.
 
-What is left after these changes is mostly native: about 10 MB of committed-but-free NT heap fragmentation from show/hide churn, the swap chain and Direct2D targets that survive hide, private DLL pages, and Go runtime metadata that scales with the heap. The next lever is releasing the Windows swap chain and Direct2D targets at the 30-second stage the way macOS releases its surface pool.
+What is left after these changes is mostly native: about 10 MB of committed-but-free NT heap fragmentation from show/hide churn, private DLL pages, and Go runtime metadata that scales with the heap.
+
+The 30-second stage destroys the whole Windows renderer: swap chains, Direct2D targets and device, and this window's reference to the shared D3D device, which is released when no other window holds it. The native WebView host keeps a raw pointer to the renderer's composition visuals, so the renderer can only be released after the WebView. Pages opened with caching enabled, such as sites with "keep in background" turned on, intentionally survive hiding; while one exists, the stage is skipped and the renderer stays resident. Every other page is already discarded on hide, so the stage closes the idle WebView controller and then releases the renderer. The stage used to be skipped whenever a controller existed, and the controller outlives every hide, so a single ordinary web preview kept the renderer resident for the rest of the hidden period.
+
+On the same Windows machine (October 10, 2026; `sqlite_fts5,wox_automation` build, isolated data directory, one `webview x` preview, then hidden), the private working set 45 seconds after hide was:
+
+| Build | Hidden + 5 s | Hidden + 45 s | Commit at 45 s |
+| --- | ---: | ---: | ---: |
+| Any WebView controller skips the stage | 100.7 MB | 94.6 MB | 162 MB |
+| Stage closes a controller without background pages | 101.8 MB | 60.4 MB | 122 MB |
+
+Without any web preview, both builds settle at about 59 MB.
 
 ## SVG theme colors
 
@@ -112,5 +176,7 @@ Standard SVG `currentColor` keeps its normal meaning and defaults to black; it i
 Use `preview.ChatConversation` for launcher, dedicated-window, and business-specific chat surfaces. It owns message/composer layout, empty-state alignment, floating catalog sizing, and the common composer keyboard behavior. `ChatInput` owns the model selector and the entire composer toolbar, including Send/Stop; add general toolbar controls there once so every host receives them. Hosts must not build alternate input toolbars or calculate composer/model-chip sizes.
 
 Supply conversation data, model/catalog entries, the native host window, theme, localized labels, and request callbacks through `ChatConversationProps`. Optional header, history, tool questions, and a business footer are extension points. `PrepareMessages` allows AI Chat to reuse its cached rich-message/tool-round preparation at the size chosen by the component. Simple hosts can supply message data directly. Use `ChatScrollState`, `ChatCatalogKey`, and `ChatComposerKey` for retained scroll and keyboard handling, including host-level keyboard dispatch outside the text field.
+
+Message preparation and text-layout caches must use the presenting host window, including Markdown, reasoning, quoted attachments, and tool details. The hidden launcher can release its Windows renderer while Chat or Settings remains open, so measuring through the launcher can fail even though the conversation's own window can still draw.
 
 Provider requests, persistence, skill context, and applying generated theme patches stay in their business controllers. These intentionally differ; the shared component does not send requests or save drafts by itself.

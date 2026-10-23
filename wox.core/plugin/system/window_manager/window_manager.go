@@ -105,7 +105,7 @@ type WindowManagerPlugin struct {
 
 func (p *WindowManagerPlugin) GetMetadata() plugin.Metadata {
 	return plugin.Metadata{
-		Id:            "5b7d9f22-4d87-4c0f-a2c1-8e2b50c8bca0",
+		Id:            common.WindowManagerPluginID,
 		Name:          "i18n:plugin_window_manager_plugin_name",
 		Author:        "Wox Launcher",
 		Website:       "https://github.com/Wox-launcher/Wox",
@@ -167,7 +167,7 @@ func (p *WindowManagerPlugin) GetMetadata() plugin.Metadata {
 			{
 				Name: plugin.MetadataFeatureMRU,
 				Params: map[string]any{
-					"HashBy": "scoreKey",
+					"HashBy": "identityKey",
 				},
 			},
 			{
@@ -271,7 +271,7 @@ func (p *WindowManagerPlugin) commandResult(ctx context.Context, query plugin.Qu
 		SubTitle: subtitle,
 		Icon:     windowManagerCommandIcon(command.Op),
 		Score:    score,
-		ScoreKey: "window-command:" + command.Command,
+		IdentityKey: "window-command:" + command.Command,
 		Tails:    targetWindowIconTail(query.Env.ActiveWindowIcon),
 		Actions: []plugin.QueryResultAction{
 			{

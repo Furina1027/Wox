@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"wox/network"
 
 	"wox/common"
 	"wox/setting"
@@ -28,7 +29,16 @@ func (s *CoreServices) Themes(ctx context.Context, sessionID string, catalog con
 	var themes []common.Theme
 	switch catalog {
 	case contract.ThemeCatalogStore:
+		if network.IsOffline() {
+			return nil, network.ErrOffline
+		}
 		manifests := GetStoreManager().GetThemeManifests()
+		if len(manifests) == 0 {
+			if err := GetStoreManager().RefreshThemeManifests(ctx); err != nil {
+				return nil, err
+			}
+			manifests = GetStoreManager().GetThemeManifests()
+		}
 		result := make([]contract.ThemeCatalogItem, 0, len(manifests))
 		for _, manifest := range manifests {
 			result = append(result, contract.ThemeCatalogItem{
@@ -155,6 +165,22 @@ func (s *CoreServices) SaveTheme(ctx context.Context, sessionID string, name str
 		return common.Theme{}, fmt.Errorf("save theme: %w", err)
 	}
 	return theme, nil
+}
+
+// InstallMigratedTheme saves a theme mapped from another launcher and selects it.
+// The mapped id is kept so importing the same source theme again updates that file.
+func (s *CoreServices) InstallMigratedTheme(ctx context.Context, sessionID string, theme common.Theme) error {
+	ctx = uiServiceContext(ctx, sessionID)
+	if strings.TrimSpace(theme.ThemeId) == "" || strings.TrimSpace(theme.ThemeName) == "" {
+		return fmt.Errorf("migrated theme is incomplete")
+	}
+	if GetUIManager().IsSystemTheme(theme.ThemeId) {
+		return fmt.Errorf("cannot overwrite system theme")
+	}
+	theme.IsSystem = false
+	theme.IsInstalled = true
+	theme.IsAutoAppearance = false
+	return GetStoreManager().Install(ctx, theme)
 }
 
 // SaveAutoTheme persists one user Auto theme document without applying it.

@@ -24,6 +24,9 @@ import (
 
 	"wox/test/automationdriver"
 	"wox/test/smokefixture"
+	"wox/test/smokeperf"
+	"wox/test/smokereport"
+	"wox/util"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -74,13 +77,17 @@ func run(caseSelector string) (int, error) {
 		return 2, fmt.Errorf("resolve Wox smoke binary: %w", err)
 	}
 	var results []smokeCaseResult
+	var performance smokeperf.Reference
 	var suiteStarted time.Time
 	// Registered first so the table is the last thing printed, including after a failure.
 	defer func() {
-		if len(results) == 0 || suiteStarted.IsZero() {
+		if !suiteStarted.IsZero() && len(results) > 0 {
+			printSmokeSummary(os.Stdout, results, time.Since(suiteStarted), performance)
 			return
 		}
-		printSmokeSummary(os.Stdout, results, time.Since(suiteStarted))
+		if !performance.Empty() {
+			smokeperf.WriteSection(os.Stdout, performance)
+		}
 	}()
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -122,6 +129,11 @@ func run(caseSelector string) (int, error) {
 			return 1, err
 		}
 	}
+	flowUserDataDirectory := filepath.Join(suiteDirectory, "flow-user-data")
+	if err := os.MkdirAll(flowUserDataDirectory, 0o755); err != nil {
+		retainSuiteDirectory = true
+		return 1, fmt.Errorf("create flow import fixture directory: %w", err)
+	}
 	launchOptions := automationdriver.LaunchOptions{
 		Environment: []string{
 			"WOX_TEST_DATA_DIR=" + woxDataDirectory,
@@ -129,19 +141,54 @@ func run(caseSelector string) (int, error) {
 			fmt.Sprintf("WOX_TEST_SERVER_PORT=%d", port),
 			"WOX_TEST_DISABLE_TELEMETRY=true",
 			"WOX_TEST_SKIP_ONBOARDING=true",
+			util.TestFlowUserDataEnv + "=" + flowUserDataDirectory,
 			"WOX_DEBUG_REPAINT=verify",
 		},
 		StartupTimeout: 45 * time.Second,
 	}
-	launchProcess := func() (*automationdriver.Process, error) {
+	launchNumber := 0
+	launchProcess := func(dataDirectory string) (*automationdriver.Process, error) {
+		launchNumber++
+		// A force-killed supervisor can leave its Unix socket behind. Each launch
+		// gets a new endpoint without unlinking a socket another process may own.
+		launchOptions.Environment = replaceEnvironment(launchOptions.Environment,
+			"WOX_SUPERVISOR_CONTROL_ADDRESS", suiteControlAddress(suiteDirectory, launchNumber))
 		process, err := automationdriver.Launch(ctx, absoluteExecutable, launchOptions)
 		if err != nil {
 			return nil, err
 		}
-		waitForAppIndexSettled(ctx, woxDataDirectory)
+		waitForAppIndexSettled(ctx, dataDirectory)
 		return process, nil
 	}
-	process, err := launchProcess()
+	// The reference runs in its own process and data directory. Its 20 queries would
+	// otherwise persist history into the suite database, and the 46s hide tears down
+	// the renderer the later cases expect to find warm.
+	if caseSelector == "" {
+		probeDataDirectory := filepath.Join(suiteDirectory, "perf-reference-data")
+		probeUserDirectory := filepath.Join(probeDataDirectory, "user-data")
+		if err := os.MkdirAll(probeUserDirectory, 0o755); err != nil {
+			retainSuiteDirectory = true
+			return 1, fmt.Errorf("create performance reference data directory: %w", err)
+		}
+		suiteEnvironment := append([]string{}, launchOptions.Environment...)
+		launchOptions.Environment = replaceEnvironment(launchOptions.Environment, "WOX_TEST_DATA_DIR", probeDataDirectory)
+		launchOptions.Environment = replaceEnvironment(launchOptions.Environment, "WOX_TEST_USER_DIR", probeUserDirectory)
+		probe, probeErr := launchProcess(probeDataDirectory)
+		launchOptions.Environment = suiteEnvironment
+		if probeErr != nil {
+			retainSuiteDirectory = true
+			return 1, fmt.Errorf("launch performance reference process: %w", probeErr)
+		}
+		collectCtx, collectCancel := context.WithTimeout(ctx, smokeperf.CollectionBudget)
+		performance = smokeperf.Collect(collectCtx, probe.Client, os.Stderr)
+		collectCancel()
+		performance.When = "fresh process, before cases"
+		if err := probe.Close(); err != nil {
+			retainSuiteDirectory = true
+			return 1, fmt.Errorf("close performance reference process: %w", err)
+		}
+	}
+	process, err := launchProcess(woxDataDirectory)
 	if err != nil {
 		retainSuiteDirectory = true
 		return 1, fmt.Errorf("launch shared Wox smoke process: %w", err)
@@ -151,10 +198,33 @@ func run(caseSelector string) (int, error) {
 	testEnvironment := replaceEnvironment(os.Environ(), automationdriver.SharedInfoFileEnvironment, process.InfoFile())
 	testEnvironment = replaceEnvironment(testEnvironment, automationdriver.SharedDataDirectoryEnvironment, woxDataDirectory)
 	testEnvironment = replaceEnvironment(testEnvironment, automationdriver.SharedUserDataDirectoryEnvironment, userDataDirectory)
+	testEnvironment = replaceEnvironment(testEnvironment, util.TestFlowUserDataEnv, flowUserDataDirectory)
+	if caseSelector == "" {
+		testEnvironment = replaceEnvironment(testEnvironment, smokeperf.CollectedEnvironment, "1")
+	}
 	suiteStarted = time.Now()
+	supervisorOwned := false
 	for _, target := range targets {
+		if smokePackageUsesSupervisor(target.dir) != supervisorOwned {
+			if err := process.Close(); err != nil {
+				retainSuiteDirectory = true
+				return 1, fmt.Errorf("close shared Wox before switching supervisor ownership: %w", err)
+			}
+			if smokePackageUsesSupervisor(target.dir) {
+				launchOptions.Args = []string{"--supervisor"}
+			} else {
+				launchOptions.Args = nil
+			}
+			process, err = launchProcess(woxDataDirectory)
+			if err != nil {
+				retainSuiteDirectory = true
+				return 1, fmt.Errorf("launch Wox for %s: %w", target.dir, err)
+			}
+			testEnvironment = replaceEnvironment(testEnvironment, automationdriver.SharedInfoFileEnvironment, process.InfoFile())
+			supervisorOwned = smokePackageUsesSupervisor(target.dir)
+		}
 		phaseCount := 1
-		// ponytail: privacy is the only restart case; add lifecycle descriptors when a second case needs phases.
+		// ponytail: privacy is the only multi-phase restart case; add lifecycle descriptors when another case needs phases.
 		if target.dir == "test/smoke/setting/privacy" {
 			phaseCount = 4
 		}
@@ -163,7 +233,7 @@ func run(caseSelector string) (int, error) {
 				retainSuiteDirectory = true
 				return 1, fmt.Errorf("close shared Wox before lifecycle test: %w", err)
 			}
-			process, err = launchProcess()
+			process, err = launchProcess(woxDataDirectory)
 			if err != nil {
 				retainSuiteDirectory = true
 				return 1, fmt.Errorf("launch Wox for lifecycle test: %w", err)
@@ -179,7 +249,8 @@ func run(caseSelector string) (int, error) {
 				commandEnv = replaceEnvironment(commandEnv, automationdriver.SharedLifecycleStateEnvironment, filepath.Join(suiteDirectory, "privacy-lifecycle.json"))
 			}
 			started := time.Now()
-			caseResults, err := runSmokeTarget(ctx, binDir, target, commandEnv, phaseLabel)
+			caseResults, parsed, err := runSmokeTarget(ctx, binDir, target, commandEnv, phaseLabel)
+			performance = performance.Merge(parsed)
 			elapsed := time.Since(started).Round(10 * time.Millisecond)
 			if err != nil && !smokeResultsHaveFailure(caseResults) {
 				result := smokeCaseResult{
@@ -227,7 +298,7 @@ func run(caseSelector string) (int, error) {
 				retainSuiteDirectory = true
 				return 1, fmt.Errorf("close lifecycle phase %d: %w", phase, err)
 			}
-			process, err = launchProcess()
+			process, err = launchProcess(woxDataDirectory)
 			if err != nil {
 				retainSuiteDirectory = true
 				return 1, fmt.Errorf("restart Wox after lifecycle phase %d: %w", phase, err)
@@ -384,6 +455,25 @@ func (target smokeTarget) importPath() string {
 	return smokeModulePath + "/" + target.dir
 }
 
+// suiteControlAddress isolates launches and keeps Unix filenames short for macOS's socket path limit.
+func suiteControlAddress(suiteDirectory string, launchNumber int) string {
+	if runtime.GOOS == "windows" {
+		return fmt.Sprintf(`\\.\pipe\WoxSupervisor-%s-%d`, filepath.Base(suiteDirectory), launchNumber)
+	}
+	return filepath.Join(suiteDirectory, fmt.Sprintf("sv%d.sock", launchNumber))
+}
+
+// smokePackageUsesSupervisor reports packages whose Wox process must be the supervisor's child.
+// Crash restart and backup restore are performed by that supervisor, so the runner cannot own the child directly.
+func smokePackageUsesSupervisor(dir string) bool {
+	switch dir {
+	case "test/smoke/supervisor", "test/smoke/setting/data":
+		return true
+	default:
+		return false
+	}
+}
+
 // binaryName is the file go test -c -o <dir> writes for this package.
 func (target smokeTarget) binaryName() string {
 	name := filepath.Base(target.dir) + ".test"
@@ -526,6 +616,7 @@ const (
 
 // smokeCaseResult is one top-level smoke case captured from the test binary.
 type smokeCaseResult struct {
+	reports []smokereport.Report
 	name    string
 	elapsed time.Duration
 	status  smokeStatus
@@ -558,33 +649,35 @@ var smokeRunLinePattern = regexp.MustCompile(`^=== RUN   (.+)$`)
 
 // runSmokeTarget executes one already compiled package against the shared Wox process.
 // It streams the test output and records each top-level case duration.
-func runSmokeTarget(ctx context.Context, binDir string, target smokeTarget, env []string, phaseLabel string) ([]smokeCaseResult, error) {
+func runSmokeTarget(ctx context.Context, binDir string, target smokeTarget, env []string, phaseLabel string) ([]smokeCaseResult, smokeperf.Reference, error) {
 	command := exec.CommandContext(ctx, filepath.Join(binDir, target.binaryName()), smokeRunArgs(target)...)
 	command.Dir = filepath.FromSlash(target.dir)
 	command.Env = env
 	stdout, err := command.StdoutPipe()
 	if err != nil {
-		return nil, err
+		return nil, smokeperf.Reference{}, err
 	}
 	command.Stderr = os.Stderr
 	if err := command.Start(); err != nil {
-		return nil, err
+		return nil, smokeperf.Reference{}, err
 	}
-	results, scanErr := collectSmokeResults(stdout, os.Stdout, target.dir, phaseLabel)
+	results, performance, scanErr := collectSmokeResults(stdout, os.Stdout, target.dir, phaseLabel)
 	waitErr := command.Wait()
 	if waitErr != nil {
-		return results, waitErr
+		return results, performance, waitErr
 	}
-	return results, scanErr
+	return results, performance, scanErr
 }
 
 // collectSmokeResults echoes test output and keeps one row per top-level case.
 // A case that starts and never reports a result is recorded as a failure so a
 // crashed binary still appears in the summary.
-func collectSmokeResults(reader io.Reader, echo io.Writer, packageDir, phaseLabel string) ([]smokeCaseResult, error) {
+func collectSmokeResults(reader io.Reader, echo io.Writer, packageDir, phaseLabel string) ([]smokeCaseResult, smokeperf.Reference, error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
 	var results []smokeCaseResult
+	var performance smokeperf.Reference
+	var reports []smokereport.Report
 	pending := ""
 	pendingAt := time.Time{}
 	finishPending := func() {
@@ -592,12 +685,21 @@ func collectSmokeResults(reader io.Reader, echo io.Writer, packageDir, phaseLabe
 			pending = ""
 			return
 		}
-		results = recordSmokeResult(echo, results, unfinishedSmokeResult(packageDir, pending, phaseLabel, pendingAt))
+		result := unfinishedSmokeResult(packageDir, pending, phaseLabel, pendingAt)
+		result.reports = reports
+		reports = nil
+		results = recordSmokeResult(echo, results, result)
 		pending = ""
 	}
 	for scanner.Scan() {
 		line := strings.TrimRight(scanner.Text(), "\r")
 		fmt.Fprintln(echo, line)
+		if ref, ok := smokeperf.ParseLine(line); ok {
+			performance = performance.Merge(ref)
+		}
+		if report, ok := smokereport.Parse(line); ok {
+			reports = append(reports, report)
+		}
 		if matches := smokeRunLinePattern.FindStringSubmatch(line); matches != nil {
 			name := matches[1]
 			// A nested run belongs to the current top-level case. Starting another
@@ -632,13 +734,15 @@ func collectSmokeResults(reader io.Reader, echo io.Writer, packageDir, phaseLabe
 			status = smokeStatusSkip
 		}
 		results = recordSmokeResult(echo, results, smokeCaseResult{
+			reports: reports,
 			name:    qualifySmokeName(packageDir, testName, phaseLabel),
 			elapsed: elapsed,
 			status:  status,
 		})
+		reports = nil
 	}
 	finishPending()
-	return results, scanner.Err()
+	return results, performance, scanner.Err()
 }
 
 // recordSmokeResult keeps one case and prints its duration as soon as it finishes.
@@ -686,7 +790,7 @@ func formatSmokeDuration(elapsed time.Duration) string {
 // printSmokeSummary writes the case table and the wall-clock total.
 // Cases are slowest first. The total stays last and includes resets and time between cases,
 // so it can exceed the sum of the rows.
-func printSmokeSummary(w io.Writer, results []smokeCaseResult, total time.Duration) {
+func printSmokeSummary(w io.Writer, results []smokeCaseResult, total time.Duration, performance smokeperf.Reference) {
 	ordered := append([]smokeCaseResult(nil), results...)
 	sort.SliceStable(ordered, func(i, j int) bool {
 		return ordered[i].elapsed > ordered[j].elapsed
@@ -716,6 +820,12 @@ func printSmokeSummary(w io.Writer, results []smokeCaseResult, total time.Durati
 		fmt.Fprintf(w, "%-*s  %*s  %s\n", nameWidth, result.name, durationWidth, formatSmokeDuration(result.elapsed), result.status.label())
 	}
 	fmt.Fprintf(w, "%-*s  %*s  %s\n", nameWidth, "TOTAL (wall)", durationWidth, totalText, smokeResultCounts(results))
+	smokeperf.WriteSection(w, performance)
+	for _, result := range results {
+		for _, report := range result.reports {
+			report.Write(w)
+		}
+	}
 }
 
 // smokeResultCounts summarizes the table for the total row.

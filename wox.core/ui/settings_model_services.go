@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 
+	"wox/common"
+	"wox/network"
 	"wox/plugin"
 	dictationplugin "wox/plugin/system/dictation"
 	"wox/ui/contract"
@@ -12,7 +14,7 @@ import (
 	"wox/util/ocr"
 )
 
-const dictationPluginID = "a3f7b8c2-d1e4-4f6a-9b0c-7e2d1a5f8b3e"
+const dictationPluginID = common.DictationPluginID
 
 // ManagedModelStatuses returns live download state for one model family.
 func (s *CoreServices) ManagedModelStatuses(ctx context.Context, sessionID string, kind contract.ManagedModelKind) ([]contract.ManagedModelStatus, error) {
@@ -70,6 +72,9 @@ func (s *CoreServices) ManagedModelEngineStatus(ctx context.Context, sessionID s
 
 // OperateManagedModel starts one asynchronous download or deletes a local dictation model.
 func (s *CoreServices) OperateManagedModel(ctx context.Context, sessionID string, kind contract.ManagedModelKind, operation contract.ManagedModelOperation, modelID string) error {
+	if network.IsOffline() && (operation == contract.ManagedModelOperationDownload || operation == contract.ManagedModelOperationDownloadEngine) {
+		return network.ErrOffline
+	}
 	ctx = uiServiceContext(ctx, sessionID)
 	switch kind {
 	case contract.ManagedModelDictation:
