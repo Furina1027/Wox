@@ -142,6 +142,7 @@ type ClipboardDBInterface interface {
 	UpdateOCRText(ctx context.Context, id string, ocrText *string) error
 	Delete(ctx context.Context, id string) error
 	GetRecent(ctx context.Context, limit, offset int) ([]ClipboardRecord, error)
+	GetAllIDs(ctx context.Context) (map[string]bool, error)
 	GetRecentByType(ctx context.Context, recordType string, limit, offset int) ([]ClipboardRecord, error)
 	SearchText(ctx context.Context, searchTerm string, limit int) ([]ClipboardRecord, error)
 	SearchByType(ctx context.Context, searchTerm string, recordType string, limit int) ([]ClipboardRecord, error)
@@ -2487,16 +2488,22 @@ func (c *ClipboardPlugin) cleanupOrphanedCacheFiles(ctx context.Context) {
 		return
 	}
 
-	// Get all current record IDs from database
-	recent, err := c.db.GetRecent(ctx, 10000, 0) // Get a large number to cover all records
+	// History rows and favorites both own files in this folder: favoriting a record
+	// removes its history row but keeps the cached image for the favorite entry.
+	validIds, err := c.db.GetAllIDs(ctx)
 	if err != nil {
-		c.api.Log(ctx, plugin.LogLevelError, fmt.Sprintf("failed to get records for cleanup: %s", err.Error()))
+		c.api.Log(ctx, plugin.LogLevelError, fmt.Sprintf("failed to get record IDs for cleanup: %s", err.Error()))
 		return
 	}
 
-	validIds := make(map[string]bool)
-	for _, record := range recent {
-		validIds[record.ID] = true
+	favorites, err := c.getFavoriteItems(ctx)
+	if err != nil {
+		// Without the favorites list every favorite image looks like an orphan.
+		c.api.Log(ctx, plugin.LogLevelError, fmt.Sprintf("failed to get favorites for cleanup, skipping orphan removal: %s", err.Error()))
+		return
+	}
+	for _, favorite := range favorites {
+		validIds[favorite.ID] = true
 	}
 
 	// Scan cache directory for clipboard files
@@ -2509,22 +2516,17 @@ func (c *ClipboardPlugin) cleanupOrphanedCacheFiles(ctx context.Context) {
 	removedCount := 0
 	for _, file := range files {
 		name := file.Name()
-		if !strings.HasPrefix(name, "clipboard_") {
-			continue
-		}
 
 		ext := strings.ToLower(filepath.Ext(name))
 		if ext != ".png" && ext != ".dib" {
 			continue
 		}
 
-		baseName := strings.TrimSuffix(name, ext)
-		parts := strings.Split(baseName, "_")
-		if len(parts) < 2 {
+		id, ok := clipboardCacheFileID(name, ext)
+		if !ok {
 			continue
 		}
 
-		id := parts[1]
 		if !validIds[id] {
 			filePath := path.Join(cacheDir, name)
 			if removeErr := os.Remove(filePath); removeErr == nil {
@@ -2536,6 +2538,25 @@ func (c *ClipboardPlugin) cleanupOrphanedCacheFiles(ctx context.Context) {
 	if removedCount > 0 {
 		c.api.Log(ctx, plugin.LogLevelInfo, fmt.Sprintf("removed %d orphaned cache files", removedCount))
 	}
+}
+
+// clipboardCacheFileID extracts the history record ID from clipboard_<uuid>[_suffix].png|.dib.
+// Link previews share the clipboard_ prefix and folder, so only UUID-shaped IDs count.
+func clipboardCacheFileID(name string, ext string) (string, bool) {
+	baseName := strings.TrimSuffix(name, ext)
+	if !strings.HasPrefix(baseName, "clipboard_") {
+		return "", false
+	}
+
+	id := strings.TrimPrefix(baseName, "clipboard_")
+	if suffixIndex := strings.IndexByte(id, '_'); suffixIndex >= 0 {
+		id = id[:suffixIndex]
+	}
+	if _, err := uuid.Parse(id); err != nil {
+		return "", false
+	}
+
+	return id, true
 }
 
 // cleanupMemoryCache removes cache entries for records that no longer exist

@@ -737,6 +737,9 @@ func (clipboardQueryTestDB) Delete(context.Context, string) error { return nil }
 func (clipboardQueryTestDB) GetRecent(context.Context, int, int) ([]ClipboardRecord, error) {
 	return nil, nil
 }
+func (clipboardQueryTestDB) GetAllIDs(context.Context) (map[string]bool, error) {
+	return map[string]bool{}, nil
+}
 func (clipboardQueryTestDB) GetRecentByType(context.Context, string, int, int) ([]ClipboardRecord, error) {
 	return nil, nil
 }
@@ -857,6 +860,30 @@ func TestClipboardSearchCandidatesKeepTypedRefinementsScoped(t *testing.T) {
 	}
 	if !clipboardRecordMatchesType(string(clipboard.ClipboardTypeImage), "", clipboardTypeRefinementAll) {
 		t.Fatal("image records must remain visible to All search")
+	}
+}
+
+// TestClipboardCacheFileID keeps link previews and unrelated files out of the orphan sweep.
+func TestClipboardCacheFileID(t *testing.T) {
+	const id = "5f815d98-27f5-488d-a756-c317ea39935b"
+	for _, tc := range []struct {
+		name   string
+		wantID string
+		wantOK bool
+	}{
+		{"clipboard_" + id + ".png", id, true},
+		{"clipboard_" + id + ".dib", id, true},
+		{"clipboard_" + id + "_preview.png", id, true},
+		{"clipboard_" + id + "_icon_plain.png", id, true},
+		{"clipboard_link_073f196b1ffa7e56ac815df6fb0dc031ff0d7bbc41d942fe6d7d16a0aa818922.png", "", false},
+		{"clipboard_not-a-uuid.png", "", false},
+		{"other_" + id + ".png", "", false},
+	} {
+		ext := strings.ToLower(filepath.Ext(tc.name))
+		gotID, gotOK := clipboardCacheFileID(tc.name, ext)
+		if gotID != tc.wantID || gotOK != tc.wantOK {
+			t.Fatalf("%s: got (%q, %v), want (%q, %v)", tc.name, gotID, gotOK, tc.wantID, tc.wantOK)
+		}
 	}
 }
 

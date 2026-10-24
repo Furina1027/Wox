@@ -230,6 +230,27 @@ func (c *ClipboardDB) Delete(ctx context.Context, id string) error {
 	return err
 }
 
+// GetAllIDs returns every history record ID. Cache cleanup must not use a recency
+// window, otherwise files of older rows are treated as orphans and deleted.
+func (c *ClipboardDB) GetAllIDs(ctx context.Context) (map[string]bool, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT id FROM clipboard_history`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	ids := make(map[string]bool)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+
+	return ids, rows.Err()
+}
+
 // GetRecent retrieves recent clipboard records with pagination
 func (c *ClipboardDB) GetRecent(ctx context.Context, limit, offset int) ([]ClipboardRecord, error) {
 	querySQL := `

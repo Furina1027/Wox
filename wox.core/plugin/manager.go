@@ -496,6 +496,18 @@ func (m *Manager) loadUserPlugins(ctx context.Context, wait bool) error {
 	var loadMu sync.Mutex
 	var loadErrors []error
 	for _, host := range AllHosts {
+		// Loading is per-plugin but the host is shared: starting one spawns a process and a
+		// websocket, so skip runtimes that no installed plugin uses.
+		hasPending := false
+		for _, metadata := range metaDataList {
+			if strings.EqualFold(metadata.Runtime, string(host.GetRuntime(ctx))) {
+				hasPending = true
+				break
+			}
+		}
+		if !hasPending {
+			continue
+		}
 		if network.IsOffline() {
 			for _, metadata := range metaDataList {
 				if strings.EqualFold(metadata.Runtime, string(host.GetRuntime(ctx))) {
@@ -505,18 +517,6 @@ func (m *Manager) loadUserPlugins(ctx context.Context, wait bool) error {
 				}
 			}
 			continue
-		}
-		if wait {
-			hasPending := false
-			for _, metadata := range metaDataList {
-				if strings.EqualFold(metadata.Runtime, string(host.GetRuntime(ctx))) {
-					hasPending = true
-					break
-				}
-			}
-			if !hasPending {
-				continue
-			}
 		}
 		pending.Add(1)
 		util.Go(ctx, fmt.Sprintf("[%s] start host", host.GetRuntime(ctx)), func() {
